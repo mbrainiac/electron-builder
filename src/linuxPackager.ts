@@ -12,6 +12,7 @@ const template = require("lodash.template")
 const __awaiter = require("./awaiter")
 
 const tmpDir = BluebirdPromise.promisify(<(config: TmpOptions, callback: (error: Error, path: string, cleanupCallback: () => void) => void) => void>_tpmDir)
+const installPrefix = "/opt"
 
 export class LinuxPackager extends PlatformPackager<LinuxBuildOptions> {
   private readonly debOptions: LinuxBuildOptions
@@ -77,7 +78,7 @@ export class LinuxPackager extends PlatformPackager<LinuxBuildOptions> {
     await outputFile(tempFile, this.debOptions.desktop || `[Desktop Entry]
 Name=${this.appName}
 Comment=${this.debOptions.description}
-Exec="${this.appName}"
+Exec="${installPrefix}/${this.appName}/${this.appName}"
 Terminal=false
 Type=Application
 Icon=${this.metadata.name}
@@ -213,12 +214,29 @@ Icon=${this.metadata.name}
       "--url", projectUrl,
     ]
 
+    let depends = options.depends
+    if (depends == null) {
+      depends = ["libappindicator1", "libnotify-bin"]
+    }
+    else if (!Array.isArray(depends)) {
+      if (typeof depends === "string") {
+        depends = [<string>depends]
+      }
+      else {
+        throw new Error(`depends must be Array or String, but specified as: ${depends}`)
+      }
+    }
+
+    for (let dep of depends) {
+      args.push("--depends", dep)
+    }
+
     use(this.metadata.license || this.devMetadata.license, it => args.push("--license", it!))
     use(this.computeBuildNumber(), it => args.push("--iteration", it!))
 
     use(options.fpm, it => args.push(...<any>it))
 
-    args.push(`${appOutDir}/=/opt/${this.appName}`)
+    args.push(`${appOutDir}/=${installPrefix}/${this.appName}`)
     args.push(...<any>(await this.packageFiles)!)
     await exec(await this.fpmPath, args)
     return destination

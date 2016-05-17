@@ -28,6 +28,8 @@ interface AssertPackOptions {
   readonly packed?: (projectDir: string) => Promise<any>
   readonly expectedContents?: Array<string>
   readonly expectedArtifacts?: Array<string>
+
+  readonly expectedDepends?: string
 }
 
 export async function assertPack(fixtureName: string, packagerOptions: PackagerOptions, checkOptions?: AssertPackOptions): Promise<void> {
@@ -60,10 +62,6 @@ export async function assertPack(fixtureName: string, packagerOptions: PackagerO
 
     await packAndCheck(projectDir, Object.assign({
       projectDir: projectDir,
-      cscLink: CSC_LINK,
-      cscKeyPassword: CSC_KEY_PASSWORD,
-      cscInstallerLink: CSC_INSTALLER_LINK,
-      cscInstallerKeyPassword: CSC_INSTALLER_KEY_PASSWORD,
       dist: true,
     }, packagerOptions), checkOptions)
 
@@ -108,7 +106,7 @@ async function packAndCheck(projectDir: string, packagerOptions: PackagerOptions
       await checkOsXResult(packager, packagerOptions, checkOptions, artifacts.get(Platform.OSX))
     }
     else if (platform === Platform.LINUX) {
-      await checkLinuxResult(projectDir, packager, packagerOptions)
+      await checkLinuxResult(projectDir, packager, packagerOptions, checkOptions)
     }
     else if (platform === Platform.WINDOWS) {
       await checkWindowsResult(packager, packagerOptions, checkOptions, artifacts.get(Platform.WINDOWS))
@@ -116,7 +114,7 @@ async function packAndCheck(projectDir: string, packagerOptions: PackagerOptions
   }
 }
 
-async function checkLinuxResult(projectDir: string, packager: Packager, packagerOptions: PackagerOptions) {
+async function checkLinuxResult(projectDir: string, packager: Packager, packagerOptions: PackagerOptions, checkOptions: AssertPackOptions) {
   const productName = getProductName(packager.metadata, packager.devMetadata)
   const expectedContents = expectedLinuxContents.map(it => {
     if (it === "/opt/TestApp/TestApp") {
@@ -146,6 +144,7 @@ async function checkLinuxResult(projectDir: string, packager: Packager, packager
     Vendor: "Foo Bar <foo@example.com>",
     Package: "testapp",
     Description: " \n   Test Application (test quite \" #378)",
+    Depends: checkOptions == null || checkOptions.expectedDepends == null ? "libappindicator1, libnotify-bin" : checkOptions.expectedDepends,
   })
 }
 
@@ -206,7 +205,7 @@ async function checkWindowsResult(packager: Packager, packagerOptions: PackagerO
 
   function getWinExpected(archSuffix: string) {
     return [
-      `RELEASES${archSuffix}`,
+      `RELEASES`,
       `${productName} Setup 1.1.0${archSuffix}.exe`,
       `TestApp-1.1.0${archSuffix}-full.nupkg`,
     ]
@@ -221,16 +220,9 @@ async function checkWindowsResult(packager: Packager, packagerOptions: PackagerO
     return
   }
 
-  let i = filenames.indexOf("RELEASES-ia32")
-  if (i !== -1) {
-    assertThat((await readFile(artifacts[i].file, "utf8")).indexOf("ia32")).not.equal(-1)
-  }
-
-  if (archSuffix == "") {
-    const expectedArtifactNames = expected.slice()
-    expectedArtifactNames[1] = `TestAppSetup-1.1.0${archSuffix}.exe`
-    assertThat(artifacts.map(it => it.artifactName).filter(it => it != null)).deepEqual([`TestApp-Setup-1.1.0${archSuffix}.exe`])
-  }
+  const expectedArtifactNames = expected.slice()
+  expectedArtifactNames[1] = `TestAppSetup-1.1.0${archSuffix}.exe`
+  assertThat(artifacts.map(it => it.artifactName).filter(it => it != null)).deepEqual([`TestApp-Setup-1.1.0${archSuffix}.exe`])
 
   const packageFile = path.join(path.dirname(artifacts[0].file), `TestApp-1.1.0${archSuffix}-full.nupkg`)
   const unZipper = new DecompressZip(packageFile)
@@ -253,13 +245,14 @@ async function checkWindowsResult(packager: Packager, packagerOptions: PackagerO
     await unZipper.extractFile(fileDescriptors.filter(it => it.path === "TestApp.nuspec")[0], {
       path: path.dirname(packageFile),
     })
-    const expectedSpec = await readFile(path.join(path.dirname(packageFile), "TestApp.nuspec"), "utf8")
-    assertThat((expectedSpec).replace(/\r\n/g, "\n")).equal(`<?xml version="1.0"?>
+    const expectedSpec = (await readFile(path.join(path.dirname(packageFile), "TestApp.nuspec"), "utf8")).replace(/\r\n/g, "\n")
+    // console.log(expectedSpec)
+    assertThat(expectedSpec).equal(`<?xml version="1.0"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2011/08/nuspec.xsd">
   <metadata>
     <id>TestApp</id>
-    <title>${productName}</title>
     <version>1.1.0</version>
+    <title>${productName}</title>
     <authors>Foo Bar</authors>
     <owners>Foo Bar</owners>
     <iconUrl>https://raw.githubusercontent.com/szwacz/electron-boilerplate/master/resources/windows/icon.ico</iconUrl>
@@ -292,4 +285,12 @@ export function platform(platform: Platform): PackagerOptions {
   return {
     platform: [platform]
   }
+}
+
+export function signed(packagerOptions: PackagerOptions): PackagerOptions {
+  packagerOptions.cscLink = CSC_LINK
+  packagerOptions.cscKeyPassword = CSC_KEY_PASSWORD
+  packagerOptions.cscInstallerLink = CSC_INSTALLER_LINK
+  packagerOptions.cscInstallerKeyPassword = CSC_INSTALLER_KEY_PASSWORD
+  return packagerOptions
 }

@@ -153,7 +153,8 @@ export interface OsXBuildOptions extends PlatformSpecificBuildOptions {
   readonly icon?: string | null
 
   /*
-   The path to background (default: `build/background.png`). The resolution of this file determines the resolution of the installer window.
+   The path to background (default: `build/background.png` if exists). The resolution of this file determines the resolution of the installer window.
+   If background is not specified, use `window.size`, see [specification](https://github.com/LinusU/node-appdmg#json-specification).
    */
   readonly background?: string | null
 
@@ -231,9 +232,9 @@ export interface WinBuildOptions extends PlatformSpecificBuildOptions {
   readonly loadingGif?: string | null
 
   /*
-   Whether to create an MSI installer. Defaults to `true` (MSI is not created).
+   Whether to create an MSI installer. Defaults to `false` (MSI is not created).
    */
-  readonly noMsi?: boolean
+  readonly msi?: boolean
 
   /*
    A URL to your existing updates. If given, these will be downloaded to create delta updates.
@@ -283,6 +284,11 @@ export interface LinuxBuildOptions {
   *deb-only.* The compression type, one of `gz`, `bzip2`, `xz` (default: `xz`).
    */
   readonly compression?: string | null
+
+  /*
+   Package dependencies. Defaults to `["libappindicator1", "libnotify-bin"]`.
+   */
+  readonly depends?: string[] | null
 }
 
 /*

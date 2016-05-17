@@ -2,7 +2,7 @@ import { PlatformPackager, BuildInfo, normalizeTargets } from "./platformPackage
 import { Platform, OsXBuildOptions, MasBuildOptions } from "./metadata"
 import * as path from "path"
 import { Promise as BluebirdPromise } from "bluebird"
-import { log, debug, debug7z, spawn, statOrNull } from "./util"
+import { log, debug, debug7z, spawn, statOrNull, warn } from "./util"
 import { createKeychain, deleteKeychain, CodeSigningInfo, generateKeychainName } from "./codeSign"
 import { path7za } from "7zip-bin"
 import deepAssign = require("deep-assign")
@@ -82,11 +82,15 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
 
     const identity = codeSigningInfo.name
     if (<string | null>identity == null) {
-      log("App is not signed: CSC_LINK or CSC_NAME are not specified")
+      const message = "App is not signed: CSC_LINK or CSC_NAME are not specified, see https://github.com/electron-userland/electron-builder/wiki/Code-Signing"
+      if (masOptions != null) {
+        throw new Error(message)
+      }
+      warn(message)
       return
     }
 
-    log(`Signing app (${identity})`)
+    log(`Signing app (identity: ${identity})`)
 
     const baseSignOptions: BaseSignOptions = {
       app: path.join(appOutDir, this.appName + ".app"),
@@ -160,7 +164,8 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
         {
           "x": 130, "y": 220, "type": "file"
         }
-      ]
+      ],
+      format: this.devMetadata.build.compression === "store" ? "UDRO" : "UDBZ",
     }, this.customBuildOptions)
 
     if (!("background" in this.customBuildOptions)) {
@@ -186,14 +191,13 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
           target: artifactPath,
           basepath: this.projectDir,
           specification: await this.computeEffectiveDistOptions(appOutDir),
-          compression: this.devMetadata.build.compression === "store" ? "NONE" : "UDBZ"
         }
 
         if (debug.enabled) {
           debug(`appdmg: ${JSON.stringify(dmgOptions, <any>null, 2)}`)
         }
 
-        const emitter = require("appdmg-tf")(dmgOptions)
+        const emitter = require("appdmg")(dmgOptions)
         emitter.on("error", reject)
         emitter.on("finish", () => resolve())
         if (debug.enabled) {

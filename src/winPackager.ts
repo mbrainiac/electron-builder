@@ -3,8 +3,8 @@ import { Promise as BluebirdPromise } from "bluebird"
 import { PlatformPackager, BuildInfo } from "./platformPackager"
 import { Platform, WinBuildOptions } from "./metadata"
 import * as path from "path"
-import { log, statOrNull } from "./util"
-import { readFile, deleteFile, rename, copy, emptyDir, writeFile, open, close, read, move } from "fs-extra-p"
+import { log, statOrNull, warn } from "./util"
+import { deleteFile, emptyDir, open, close, read, move } from "fs-extra-p"
 import { sign } from "signcode-tf"
 import ElectronPackagerOptions = ElectronPackager.ElectronPackagerOptions
 
@@ -52,6 +52,10 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
   }
 
   async pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any> {
+    if (arch === "ia32") {
+      warn("For windows consider only distributing 64-bit, see https://github.com/electron-userland/electron-builder/issues/359#issuecomment-214851130")
+    }
+
     // we must check icon before pack because electron-packager uses icon and it leads to cryptic error message "spawn wine ENOENT"
     await this.iconPath
 
@@ -64,7 +68,7 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     }
 
     const unpackedDir = path.join(outDir, `win${arch === "x64" ? "" : `-${arch}`}-unpacked`)
-    const finalAppOut = path.join(outDir, `win${arch === "x64" ? "" : `-${arch}`}-unpacked`, "lib", "net45")
+    const finalAppOut = path.join(unpackedDir, "lib", "net45")
     const installerOut = computeDistOut(outDir, arch)
     log("Removing %s and %s", path.relative(this.projectDir, installerOut), path.relative(this.projectDir, unpackedDir))
     await BluebirdPromise.all([
@@ -99,7 +103,7 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     }
   }
 
-  protected async computeEffectiveDistOptions(appOutDir: string, installerOutDir: string, packOptions: ElectronPackagerOptions): Promise<any> {
+  protected async computeEffectiveDistOptions(appOutDir: string, installerOutDir: string, packOptions: ElectronPackagerOptions, setupExeName: string): Promise<any> {
     let iconUrl = this.customBuildOptions.iconUrl || this.devMetadata.build.iconUrl
     if (iconUrl == null) {
       if (this.info.repositoryInfo != null) {
@@ -128,6 +132,7 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
       name: this.metadata.name,
       productName: this.appName,
       exe: this.appName + ".exe",
+      setupExe: setupExeName,
       title: this.appName,
       appDirectory: appOutDir,
       outputDirectory: installerOutDir,
@@ -141,7 +146,7 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
       fixUpPaths: false,
       skipUpdateIcon: true,
       usePackageJson: false,
-      noMsi: true,
+      msi: false,
       extraMetadataSpecs: projectUrl == null ? null : `\n    <projectUrl>${projectUrl}</projectUrl>`,
       copyright: packOptions["app-copyright"],
       sign: {
@@ -162,42 +167,15 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
   async packageInDistributableFormat(outDir: string, appOutDir: string, arch: string, packOptions: ElectronPackagerOptions): Promise<any> {
     const installerOutDir = computeDistOut(outDir, arch)
     const winstaller = require("electron-winstaller-fixed")
-    await winstaller.createWindowsInstaller(await this.computeEffectiveDistOptions(appOutDir, installerOutDir, packOptions))
-
     const version = this.metadata.version
     const archSuffix = arch === "x64" ? "" : ("-" + arch)
-    const releasesFile = path.join(installerOutDir, "RELEASES")
-    const nupkgVersion = winstaller.convertVersion(version)
-    const nupkgPathOriginal = `${this.metadata.name}-${nupkgVersion}-full.nupkg`
-    const nupkgPathWithArch = `${this.metadata.name}-${nupkgVersion}${archSuffix}-full.nupkg`
+    const setupExeName = `${this.appName} Setup ${version}${archSuffix}.exe`
 
-    async function changeFileNameInTheReleasesFile(): Promise<void> {
-      const data = (await readFile(releasesFile, "utf8")).replace(new RegExp(" " + nupkgPathOriginal + " ", "g"), " " + nupkgPathWithArch + " ")
-      await writeFile(releasesFile, data)
-    }
+    await winstaller.createWindowsInstaller(await this.computeEffectiveDistOptions(appOutDir, installerOutDir, packOptions, setupExeName))
 
-    const promises: Array<Promise<any>> = [
-      rename(path.join(installerOutDir, "Setup.exe"), path.join(installerOutDir, `${this.appName} Setup ${version}${archSuffix}.exe`))
-        .then(it => this.dispatchArtifactCreated(it, `${this.metadata.name}-Setup-${version}${archSuffix}.exe`)),
-    ]
-
-    if (archSuffix === "") {
-      this.dispatchArtifactCreated(path.join(installerOutDir, nupkgPathOriginal))
-      this.dispatchArtifactCreated(path.join(installerOutDir, "RELEASES"))
-    }
-    else {
-      promises.push(
-        rename(path.join(installerOutDir, nupkgPathOriginal), path.join(installerOutDir, nupkgPathWithArch))
-          .then(it => this.dispatchArtifactCreated(it))
-      )
-      promises.push(
-        changeFileNameInTheReleasesFile()
-          .then(() => copy(releasesFile, path.join(installerOutDir, "RELEASES-ia32")))
-          .then(it => this.dispatchArtifactCreated(it))
-      )
-    }
-
-    await BluebirdPromise.all(promises)
+    this.dispatchArtifactCreated(path.join(installerOutDir, setupExeName), `${this.metadata.name}-Setup-${version}${archSuffix}.exe`)
+    this.dispatchArtifactCreated(path.join(installerOutDir, `${this.metadata.name}-${winstaller.convertVersion(version)}-full.nupkg`))
+    this.dispatchArtifactCreated(path.join(installerOutDir, "RELEASES"))
   }
 }
 
@@ -251,18 +229,23 @@ function isIco(buffer: Buffer): boolean {
 }
 
 export function computeDistOut(outDir: string, arch: string): string {
-  return path.join(outDir, "win" + (arch === "x64" ? "" : "-arch"))
+  return path.join(outDir, `win${arch === "x64" ? "" : `-${arch}` }`)
 }
 
 function checkConflictingOptions(options: any) {
   for (let name of ["outputDirectory", "appDirectory", "exe", "fixUpPaths", "usePackageJson", "extraFileSpecs", "extraMetadataSpecs", "skipUpdateIcon", "setupExe"]) {
-    if (name! in options) {
+    if (name in options) {
       throw new Error(`Option ${name} is ignored, do not specify it.`)
     }
   }
 
-  const noMsi = options.noMsi
-  if (noMsi != null && typeof noMsi !== "boolean") {
-    throw new Error(`noMsi expected to be boolean value, but string '"${noMsi}"' was specified`)
+  if ("noMsi" in options) {
+    warn(`noMsi is deprecated, please specify as "msi": true if you want to create an MSI installer`)
+    options.msi = !options.noMsi
+  }
+
+  const msi = options.msi
+  if (msi != null && typeof msi !== "boolean") {
+    throw new Error(`msi expected to be boolean value, but string '"${msi}"' was specified`)
   }
 }
