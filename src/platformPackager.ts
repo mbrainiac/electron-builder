@@ -318,7 +318,7 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
         tarEnv[info.env] = storeOnly ? info.minLevel : info.maxLevel
       }
 
-      await spawn(process.platform === "darwin" ? "/usr/local/opt/gnu-tar/libexec/gnubin/tar" : "tar", [info.flag, "-cf", outFile, "-C", fileToArchive + '/..', basename], {
+      await spawn(process.platform === "darwin" ? "/usr/local/opt/gnu-tar/libexec/gnubin/tar" : "tar", [info.flag, "-cf", outFile, "-C", fileToArchive + '/..', './' + basename], {
         cwd: baseDir,
         stdio: ["ignore", debug.enabled ? "inherit" : "ignore", "inherit"],
         env: tarEnv

@@ -230,7 +230,7 @@ class PlatformPackager {
                     tarEnv = Object.assign({}, process.env);
                     tarEnv[info.env] = storeOnly ? info.minLevel : info.maxLevel;
                 }
-                yield util_1.spawn(process.platform === "darwin" ? "/usr/local/opt/gnu-tar/libexec/gnubin/tar" : "tar", [info.flag, "-cf", outFile, "-C", fileToArchive + '/..', basename], {
+                yield util_1.spawn(process.platform === "darwin" ? "/usr/local/opt/gnu-tar/libexec/gnubin/tar" : "tar", [info.flag, "-cf", outFile, "-C", fileToArchive + '/..', './' + basename], {
                     cwd: baseDir,
                     stdio: ["ignore", util_1.debug.enabled ? "inherit" : "ignore", "inherit"],
                     env: tarEnv
