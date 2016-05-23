@@ -1,5 +1,5 @@
-import { statOrNull, spawn, debug, debug7z } from "./util"
-import { writeFile, rename, remove, stat, emptyDir } from "fs-extra-p"
+import { statOrNull, spawn, debug, debug7zArgs, getTempName } from "./util"
+import { writeFile, rename, remove, unlink, emptyDir } from "fs-extra-p"
 import { download } from "./httpRequest"
 import { path7za } from "7zip-bin"
 import * as path from "path"
@@ -8,12 +8,6 @@ import { Promise as BluebirdPromise } from "bluebird"
 
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("./awaiter")
-
-let tmpDirCounter = 0
-
-function getTempName(prefix?: string | n): string {
-  return `${prefix == null ? "" : prefix + "-"}${process.pid}-${tmpDirCounter++}-${Date.now()}`
-}
 
 const versionToPromise = new Map<string, BluebirdPromise<string>>()
 
@@ -48,35 +42,24 @@ async function doDownloadFpm(version: string, osAndArch: string): Promise<string
   }
 
   // 7z cannot be extracted from the input stream, temp file is required
-  const tempName = getTempName()
-  const archiveName = path.join(cacheDir, `${tempName}.7z`)
-  const tempUnpackDir = path.join(cacheDir, tempName)
+  const tempUnpackDir = path.join(cacheDir, getTempName())
+  const archiveName = `${tempUnpackDir}.7z`
   debug(`Download fpm from ${url} to ${archiveName}`)
-  await BluebirdPromise.all<any>([download(url, archiveName), emptyDir(tempUnpackDir)])
+  // 7z doesn't create out dir
+  await emptyDir(tempUnpackDir)
+  await download(url, archiveName, false)
 
-  if (debug.enabled && (!(await stat(archiveName)).isFile())) {
-    throw new Error(`${archiveName} was not downloaded correctly`)
-  }
-
-  const args = ["x", archiveName, "-o" + tempUnpackDir, "-bd"]
-  if (debug7z.enabled) {
-    args.push("-bb3")
-  }
-  else if (!debug.enabled) {
-    args.push("-bb0")
-  }
-
-  await spawn(path7za, args, {
+  await spawn(path7za, debug7zArgs("x").concat(archiveName, `-o${tempUnpackDir}`), {
     cwd: cacheDir,
     stdio: ["ignore", debug.enabled ? "inherit" : "ignore", "inherit"],
   })
 
-  await BluebirdPromise.all<any>([
+  await BluebirdPromise.all([
     rename(path.join(tempUnpackDir, dirName), fpmDir)
       .catch(e => {
         console.warn("Cannot move downloaded fpm into final location (another process downloaded faster?): " + e)
       }),
-    remove(archiveName),
+    unlink(archiveName),
   ])
   await BluebirdPromise.all([
     remove(tempUnpackDir),

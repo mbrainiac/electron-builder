@@ -1,6 +1,5 @@
 node_modules/
 *.log
-out/
 npm-debug.log
 dist/
 /.idea/compiler.xml
