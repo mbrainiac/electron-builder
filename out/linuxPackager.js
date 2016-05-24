@@ -63,7 +63,7 @@ class LinuxPackager extends platformPackager_1.PlatformPackager {
                 for (let target of this.targets) {
                     if (target === "zip" || target === "7z" || target.startsWith("tar.")) {
                         const destination = path.join(outDir, `${ this.metadata.name }-${ this.metadata.version }${ platformPackager_1.archSuffix(arch) }.${ target }`);
-                        postAsyncTasks.push(this.archiveApp(target, appOutDir, destination).then(() => this.dispatchArtifactCreated(destination)));
+                        yield this.archiveApp(target, appOutDir, destination).then(() => this.dispatchArtifactCreated(destination));
                     }
                 }
                 postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch));

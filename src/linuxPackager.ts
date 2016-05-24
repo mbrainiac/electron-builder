@@ -77,8 +77,8 @@ export class LinuxPackager extends PlatformPackager<LinuxBuildOptions> {
       for (let target of this.targets) {
         if (target === "zip" || target === "7z" || target.startsWith("tar.")) {
           const destination = path.join(outDir, `${this.metadata.name}-${this.metadata.version}${archSuffix(arch)}.${target}`)
-          postAsyncTasks.push(this.archiveApp(target, appOutDir, destination)
-            .then(() => this.dispatchArtifactCreated(destination)))
+          await this.archiveApp(target, appOutDir, destination)
+            .then(() => this.dispatchArtifactCreated(destination))
         }
       }
 
