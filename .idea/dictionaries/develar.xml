@@ -10,6 +10,7 @@
       <w>circleci</w>
       <w>clcerts</w>
       <w>cleanuper</w>
+      <w>codesigning</w>
       <w>coroutine</w>
       <w>crypto</w>
       <w>debian</w>
@@ -64,6 +65,7 @@
       <w>winstaller</w>
       <w>xamarin</w>
       <w>xenial</w>
+      <w>yargs</w>
     </words>
   </dictionary>
 </component>

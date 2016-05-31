@@ -3,18 +3,16 @@ import { Promise as BluebirdPromise } from "bluebird"
 import { PlatformPackager, BuildInfo, smarten, archSuffix } from "./platformPackager"
 import { Platform, WinBuildOptions } from "./metadata"
 import * as path from "path"
-import { log, statOrNull, warn } from "./util"
-import { deleteFile, emptyDir, open, close, read, move } from "fs-extra-p"
+import { log, warn } from "./util"
+import { deleteFile, emptyDir, open, close, read } from "fs-extra-p"
 import { sign } from "signcode-tf"
-import ElectronPackagerOptions = ElectronPackager.ElectronPackagerOptions
+import { ElectronPackagerOptions } from "electron-packager-tf"
 
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("./awaiter")
 
 export class WinPackager extends PlatformPackager<WinBuildOptions> {
   certFilePromise: Promise<string | null>
-
-  loadingGifStat: Promise<string> | null
 
   readonly iconPath: Promise<string>
 
@@ -33,12 +31,6 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     }
 
     this.iconPath = this.getValidIconPath()
-
-    if (this.options.dist && this.customBuildOptions.loadingGif == null) {
-      const installSpinnerPath = path.join(this.buildResourcesDir, "install-spinner.gif")
-      this.loadingGifStat = statOrNull(installSpinnerPath)
-        .then(it => it != null && !it.isDirectory() ? installSpinnerPath : null)
-    }
   }
 
   get platform() {
@@ -63,31 +55,25 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     // we must check icon before pack because electron-packager uses icon and it leads to cryptic error message "spawn wine ENOENT"
     await this.iconPath
 
-    let appOutDir = this.computeAppOutDir(outDir, arch)
-    const packOptions = this.computePackOptions(outDir, arch)
+    const appOutDir = this.computeAppOutDir(outDir, arch)
+    const packOptions = this.computePackOptions(outDir, appOutDir, arch)
 
-    if (!this.options.dist) {
+    if (!this.targets.includes("default")) {
       await this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions)
       return
     }
 
-    const unpackedDir = path.join(outDir, `win${arch === "x64" ? "" : `-${arch}`}-unpacked`)
-    const finalAppOut = path.join(unpackedDir, "lib", "net45")
     const installerOut = computeDistOut(outDir, arch)
-    log("Removing %s and %s", path.relative(this.projectDir, installerOut), path.relative(this.projectDir, unpackedDir))
     await BluebirdPromise.all([
-      this.packApp(packOptions, appOutDir),
-      emptyDir(installerOut),
-      emptyDir(unpackedDir)
+      this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions),
+      emptyDir(installerOut)
     ])
 
-    await move(appOutDir, finalAppOut)
-    appOutDir = finalAppOut
+    postAsyncTasks.push(this.packageInDistributableFormat(appOutDir, installerOut, arch, packOptions))
+  }
 
-    await this.copyExtraResources(appOutDir, arch, this.customBuildOptions)
-    if (this.options.dist) {
-      postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch, packOptions))
-    }
+  protected computeAppOutDir(outDir: string, arch: string): string {
+    return path.join(outDir, `win${arch === "x64" ? "" : `-${arch}`}-unpacked`)
   }
 
   protected async packApp(options: any, appOutDir: string) {
@@ -103,6 +89,7 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
         name: this.appName,
         site: await this.computePackageUrl(),
         overwrite: true,
+        hash: this.customBuildOptions.signingHashAlgorithms,
       })
     }
   }
@@ -150,26 +137,28 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
       fixUpPaths: false,
       skipUpdateIcon: true,
       usePackageJson: false,
-      msi: false,
       extraMetadataSpecs: projectUrl == null ? null : `\n    <projectUrl>${projectUrl}</projectUrl>`,
       copyright: packOptions["app-copyright"],
       sign: {
         name: this.appName,
         site: projectUrl,
         overwrite: true,
+        hash: this.customBuildOptions.signingHashAlgorithms,
       },
       rcedit: rceditOptions,
     }, this.customBuildOptions)
 
-    if (this.loadingGifStat != null) {
-      options.loadingGif = await this.loadingGifStat
+    if (!("loadingGif" in options)) {
+      const resourceList = await this.resourceList
+      if (resourceList.includes("install-spinner.gif")) {
+        options.loadingGif = path.join(this.buildResourcesDir, "install-spinner.gif")
+      }
     }
 
     return options
   }
 
-  async packageInDistributableFormat(outDir: string, appOutDir: string, arch: string, packOptions: ElectronPackagerOptions): Promise<any> {
-    const installerOutDir = computeDistOut(outDir, arch)
+  protected async packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: string, packOptions: ElectronPackagerOptions): Promise<any> {
     const winstaller = require("electron-winstaller-fixed")
     const version = this.metadata.version
     const archSuffix = arch === "x64" ? "" : ("-" + arch)

@@ -55,7 +55,7 @@ export class Packager implements BuildInfo {
     const platforms = this.options.platform!
 
     this.devMetadata = deepAssign(await readPackageJson(devPackageFile), this.options.devMetadata)
-    this.appDir = await computeDefaultAppDirectory(this.projectDir, use(this.devMetadata.directories, it => it!.app) || this.options.appDir)
+    this.appDir = await computeDefaultAppDirectory(this.projectDir, use(this.devMetadata.directories, it => it!.app))
 
     this.isTwoPackageJsonProjectLayoutUsed = this.appDir !== this.projectDir
 
@@ -77,7 +77,7 @@ export class Packager implements BuildInfo {
     // custom packager - don't check wine
     let checkWine = this.options.platformPackagerFactory == null
     for (let platform of platforms) {
-      let wineCheck: Promise<Buffer[]> | null = null
+      let wineCheck: Promise<string> | null = null
       if (checkWine && process.platform !== "win32" && platform === Platform.WINDOWS) {
         wineCheck = exec("wine", ["--version"])
       }
@@ -126,20 +126,22 @@ export class Packager implements BuildInfo {
 
   private checkMetadata(appPackageFile: string, devAppPackageFile: string, platforms: Array<Platform>): void {
     const reportError = (missedFieldName: string) => {
-      throw new Error("Please specify '" + missedFieldName + "' in the application package.json ('" + appPackageFile + "')")
+      throw new Error(`Please specify '${missedFieldName}' in the application package.json ('${appPackageFile}')`)
+    }
+
+    const checkNotEmpty = (name: string, value: string) => {
+      if (isEmptyOrSpaces(value)) {
+        reportError(name)
+      }
     }
 
     const appMetadata = this.metadata
-    if (<any>appMetadata.name == null) {
-      reportError("name")
-    }
-    else if (<any>appMetadata.description == null) {
-      reportError("description")
-    }
-    else if (<any>appMetadata.version == null) {
-      reportError("version")
-    }
-    else if ((<any>appMetadata) !== this.devMetadata) {
+
+    checkNotEmpty("name", appMetadata.name)
+    checkNotEmpty("description", appMetadata.description)
+    checkNotEmpty("version", appMetadata.version)
+
+    if ((<any>appMetadata) !== this.devMetadata) {
       if ((<any>appMetadata).build != null) {
         throw new Error(util.format(errorMessages.buildInAppSpecified, appPackageFile, devAppPackageFile))
       }
@@ -160,7 +162,7 @@ export class Packager implements BuildInfo {
       if (<any>author == null) {
         reportError("author")
       }
-      else if (this.options.dist && <any>author.email == null && platforms.includes(Platform.LINUX)) {
+      else if (<any>author.email == null && platforms.includes(Platform.LINUX)) {
         throw new Error(util.format(errorMessages.authorEmailIsMissed, appPackageFile))
       }
 
@@ -171,7 +173,10 @@ export class Packager implements BuildInfo {
   }
 
   private installAppDependencies(platform: Platform, arch: string): Promise<any> {
-    if (this.isTwoPackageJsonProjectLayoutUsed) {
+    if (!this.options.npmRebuild) {
+      log("Skip app dependencies rebuild because npmRebuild is set to false")
+    }
+    else if (this.isTwoPackageJsonProjectLayoutUsed) {
       if (platform.nodeName === process.platform) {
         return installDependencies(this.appDir, this.electronVersion, arch, "rebuild")
       }
@@ -226,14 +231,14 @@ function checkConflictingOptions(options: any) {
   }
 }
 
-async function checkWineVersion(checkPromise: Promise<Buffer[]>) {
+async function checkWineVersion(checkPromise: Promise<string>) {
   function wineError(prefix: string): string {
     return `${prefix}, please see https://github.com/electron-userland/electron-builder/wiki/Multi-Platform-Build#${(process.platform === "linux" ? "linux" : "os-x")}`
   }
 
   let wineVersion: string
   try {
-    wineVersion = (await checkPromise)[0].toString().trim()
+    wineVersion = (await checkPromise).trim()
   }
   catch (e) {
     if (e.code === "ENOENT") {
@@ -251,4 +256,8 @@ async function checkWineVersion(checkPromise: Promise<Buffer[]>) {
   if (compareVersions(wineVersion, "1.8") === -1) {
     throw new Error(wineError(`wine 1.8+ is required, but your version is ${wineVersion}`))
   }
+}
+
+function isEmptyOrSpaces(s: string | n) {
+  return s == null || s.trim().length === 0
 }

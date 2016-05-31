@@ -1,4 +1,5 @@
-import ElectronPackagerOptions = ElectronPackager.ElectronPackagerOptions
+import { ElectronPackagerOptions } from "electron-packager-tf"
+
 export interface Metadata {
   readonly repository?: string | RepositoryInfo | null
 }
@@ -104,7 +105,7 @@ export interface BuildMetadata {
   readonly productName?: string | null
 
   /**
-   A [glob expression](https://www.npmjs.com/package/glob#glob-primer), when specified, copy the file or directory with matching names directly into the app's directory (`Contents/Resources` for OS X).
+   A [glob expression](https://www.npmjs.com/package/glob#glob-primer), when specified, copy the file or directory with matching names directly into the app's resources directory (`Contents/Resources` for OS X, `resources` for Linux/Windows).
 
    You can use `${os}` (expanded to osx, linux or win according to current platform) and `${arch}` in the pattern.
 
@@ -113,6 +114,11 @@ export interface BuildMetadata {
    May be specified in the platform options (i.e. in the `build.osx`).
    */
   readonly extraResources?: Array<string> | null
+
+  /**
+   The same as [extraResources](#BuildMetadata-extraResources) but copy into the app's content directory (`Contents` for OS X, `` for Linux/Windows).
+   */
+  readonly extraFiles?: Array<string> | null
 
   /*
    See [.build.osx](#OsXBuildOptions).
@@ -170,7 +176,7 @@ export interface OsXBuildOptions extends PlatformSpecificBuildOptions {
   readonly background?: string | null
 
   /*
-   Target package type: list of `default`, `dmg`, `zip`, `mas`, `7z`, `tar.xz`, `tar.gz`, `tar.bz2`, `tar.7z`. Defaults to `default` (dmg and zip for Squirrel.Mac).
+   Target package type: list of `default`, `dmg`, `mas`, `7z`, `zip`, `tar.xz`, `tar.lz`, `tar.gz`, `tar.bz2`. Defaults to `default` (dmg and zip for Squirrel.Mac).
   */
   readonly target?: Array<string> | null
 
@@ -201,11 +207,6 @@ export interface OsXBuildOptions extends PlatformSpecificBuildOptions {
  MAS (Mac Application Store) specific options (in addition to `build.osx`).
  */
 export interface MasBuildOptions extends OsXBuildOptions {
-  /*
-   The name of certificate to use when signing. Consider using environment variables [CSC_INSTALLER_LINK or CSC_INSTALLER_NAME](https://github.com/electron-userland/electron-builder/wiki/Code-Signing).
-  */
-  readonly identity?: string | null
-
   /*
    The path to entitlements file for signing the app. `build/mas.entitlements` will be used if exists (it is a recommended way to set).
    Otherwise [default](https://github.com/electron-userland/electron-osx-sign/blob/master/default.mas.entitlements).
@@ -256,6 +257,12 @@ export interface WinBuildOptions extends PlatformSpecificBuildOptions {
    Authentication token for remote updates
    */
   readonly remoteToken?: string | null
+
+  /*
+   Array of signing algorithms used. Defaults to `['sha1', 'sha256']`
+   */
+  readonly signingHashAlgorithms?: Array<string> | null
+  readonly signcodePath?: string | null
 }
 
 /*
@@ -330,6 +337,7 @@ export interface MetadataDirectories {
 }
 
 export interface PlatformSpecificBuildOptions {
+  readonly extraFiles?: Array<string> | null
   readonly extraResources?: Array<string> | null
 
   readonly target?: Array<string> | null

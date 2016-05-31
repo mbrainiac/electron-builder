@@ -5,7 +5,7 @@ import { move, outputFile, outputJson } from "fs-extra-p"
 import { Promise as BluebirdPromise } from "bluebird"
 import * as path from "path"
 import { assertThat } from "./helpers/fileAssert"
-import { Platform, PackagerOptions } from "out"
+import { Platform, PackagerOptions, DIR_TARGET } from "out"
 import pathSorter = require("path-sort")
 
 //noinspection JSUnusedLocalSymbols
@@ -55,6 +55,13 @@ test("name in the build", t => t.throws(assertPack("test-app-one", currentPlatfo
   })
 }), /'name' in the 'build' is forbidden/))
 
+test("empty description", t => t.throws(assertPack("test-app-one", {
+  platform: [Platform.LINUX],
+  devMetadata: <any>{
+    description: "",
+  }
+}), /Please specify 'description'/))
+
 test("invalid main in the app package.json", t => t.throws(assertPack("test-app", allPlatforms(false), {
   tempDirCreated: projectDir => modifyPackageJson(projectDir, data => {
     data.main = "main.js"
@@ -94,10 +101,15 @@ test("relative index", () => assertPack("test-app", allPlatforms(false), {
   }, true)
 }))
 
-test("version from electron-prebuilt dependency", () => assertPack("test-app-one", currentPlatform(false), {
+const electronVersion = "0.37.8"
+
+test.ifNotWindows("electron version from electron-prebuilt dependency", () => assertPack("test-app-one", {
+  platform: [Platform.LINUX],
+  target: ["dir"],
+}, {
   tempDirCreated: projectDir => BluebirdPromise.all([
     outputJson(path.join(projectDir, "node_modules", "electron-prebuilt", "package.json"), {
-      version: "0.37.8"
+      version: electronVersion
     }),
     modifyPackageJson(projectDir, data => {
       data.devDependencies = {}
@@ -105,50 +117,58 @@ test("version from electron-prebuilt dependency", () => assertPack("test-app-one
   ])
 }))
 
+test.ifNotWindows("electron version from build", () => assertPack("test-app-one", {
+  platform: [Platform.LINUX],
+  target: [DIR_TARGET],
+}, {
+  tempDirCreated: projectDir => modifyPackageJson(projectDir, data => {
+    data.devDependencies = {}
+    data.build.electronVersion = electronVersion
+  })
+}))
+
 test("www as default dir", () => assertPack("test-app", currentPlatform(), {
   tempDirCreated: projectDir => move(path.join(projectDir, "app"), path.join(projectDir, "www"))
 }))
 
 test("afterPack", t => {
-  let called = false
+  const possiblePlatforms = process.env.CI ? [Platform.fromString(process.platform)] : getPossiblePlatforms()
+  let called = 0
   return assertPack("test-app-one", {
     // linux pack is very fast, so, we use it :)
-    platform: [Platform.LINUX],
-    dist: true,
+    platform: possiblePlatforms,
+    target: [DIR_TARGET],
     devMetadata: {
       build: {
         afterPack: () => {
-          called = true
+          called++
           return Promise.resolve()
         }
       }
     }
   }, {
     packed: () => {
-      t.true(called)
+      t.is(called, possiblePlatforms.length)
       return Promise.resolve()
     }
   })
 })
 
-test("copy extra resource", async () => {
+test("copy extra content", async () => {
   for (let platform of getPossiblePlatforms()) {
     const osName = platform.buildConfigurationKey
+
+    const winDirPrefix = "lib/net45/resources/"
 
     //noinspection SpellCheckingInspection
     await assertPack("test-app", {
       platform: [platform],
       // to check NuGet package
-      dist: platform === Platform.WINDOWS,
-      cscLink: null,
-      cscInstallerLink: null,
+      target: platform === Platform.WINDOWS ? null : [DIR_TARGET],
     }, {
       tempDirCreated: (projectDir) => {
         return BluebirdPromise.all([
           modifyPackageJson(projectDir, data => {
-            if (data.build == null) {
-              data.build = {}
-            }
             data.build.extraResources = [
               "foo",
               "bar/hello.txt",
@@ -158,40 +178,44 @@ test("copy extra resource", async () => {
 
             data.build[osName] = {
               extraResources: [
-                "platformSpecific"
-              ]
+                "platformSpecificR"
+              ],
+              extraFiles: [
+                "platformSpecificF"
+              ],
             }
           }),
           outputFile(path.join(projectDir, "foo/nameWithoutDot"), "nameWithoutDot"),
           outputFile(path.join(projectDir, "bar/hello.txt"), "data"),
           outputFile(path.join(projectDir, `bar/${process.arch}.txt`), "data"),
           outputFile(path.join(projectDir, `${osName}/${process.arch}.txt`), "data"),
-          outputFile(path.join(projectDir, "platformSpecific"), "platformSpecific"),
+          outputFile(path.join(projectDir, "platformSpecificR"), "platformSpecificR"),
           outputFile(path.join(projectDir, "ignoreMe.txt"), "ignoreMe"),
         ])
       },
       packed: async (projectDir) => {
-        let resourcesDir = path.join(projectDir, outDirName, "TestApp-" + platform.nodeName + "-" + process.arch)
+        const base = path.join(projectDir, outDirName, platform.buildConfigurationKey)
+        let resourcesDir = path.join(base, "resources")
         if (platform === Platform.OSX) {
-          resourcesDir = path.join(resourcesDir, "TestApp.app", "Contents", "Resources")
+          resourcesDir = path.join(base, "TestApp.app", "Contents", "Resources")
         }
         else if (platform === Platform.WINDOWS) {
-          resourcesDir = path.join(projectDir, outDirName, "win-unpacked", "lib", "net45")
+          resourcesDir = path.join(base + "-unpacked", "resources")
         }
         await assertThat(path.join(resourcesDir, "foo")).isDirectory()
         await assertThat(path.join(resourcesDir, "foo", "nameWithoutDot")).isFile()
         await assertThat(path.join(resourcesDir, "bar", "hello.txt")).isFile()
         await assertThat(path.join(resourcesDir, "bar", `${process.arch}.txt`)).isFile()
         await assertThat(path.join(resourcesDir, osName, `${process.arch}.txt`)).isFile()
-        await assertThat(path.join(resourcesDir, "platformSpecific")).isFile()
+        await assertThat(path.join(resourcesDir, "platformSpecificR")).isFile()
         await assertThat(path.join(resourcesDir, "ignoreMe.txt")).doesNotExist()
       },
       expectedContents: platform === Platform.WINDOWS ? pathSorter(expectedWinContents.concat(
-        "lib/net45/bar/hello.txt",
-        "lib/net45/bar/x64.txt",
-        "lib/net45/foo/nameWithoutDot",
-        "lib/net45/platformSpecific",
-        "lib/net45/win/x64.txt"
+        winDirPrefix + "bar/hello.txt",
+        winDirPrefix + "bar/x64.txt",
+        winDirPrefix + "foo/nameWithoutDot",
+        winDirPrefix + "platformSpecificR",
+        winDirPrefix + "win/x64.txt"
       )) : null,
     })
   }
@@ -199,31 +223,29 @@ test("copy extra resource", async () => {
 
 test("invalid platform", t => t.throws(assertPack("test-app-one", {
   platform: [null],
-  dist: false
+  target: [DIR_TARGET]
 }), "Unknown platform: null"))
 
 function allPlatforms(dist: boolean = true): PackagerOptions {
   return {
     platform: getPossiblePlatforms(),
-    dist: dist,
+    target: dist ? null : [DIR_TARGET],
   }
 }
 
 function currentPlatform(dist: boolean = true): PackagerOptions {
   return {
     platform: [Platform.fromString(process.platform)],
-    dist: dist,
+    target: dist ? null : [DIR_TARGET],
   }
 }
 
 function getPossiblePlatforms(): Array<Platform> {
-  const isCi = process.env.CI != null
   if (process.platform === Platform.OSX.nodeName) {
-    return isCi ? [Platform.OSX, Platform.LINUX] : [Platform.OSX, Platform.LINUX, Platform.WINDOWS]
+    return process.env.CI ? [Platform.OSX, Platform.LINUX] : [Platform.OSX, Platform.LINUX, Platform.WINDOWS]
   }
   else if (process.platform === Platform.LINUX.nodeName) {
-    // todo install wine on Linux agent
-    return [Platform.LINUX]
+    return [Platform.LINUX, Platform.WINDOWS]
   }
   else {
     return [Platform.WINDOWS]

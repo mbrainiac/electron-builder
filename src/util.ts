@@ -67,15 +67,15 @@ export interface ExecOptions extends BaseExecOptions {
   killSignal?: string
 }
 
-export function exec(file: string, args?: Array<string> | null, options?: ExecOptions): BluebirdPromise<Buffer[]> {
+export function exec(file: string, args?: Array<string> | null, options?: ExecOptions): BluebirdPromise<string> {
   if (debug.enabled) {
     debug(`Executing ${file} ${args == null ? "" : args.join(" ")}`)
   }
 
-  return new BluebirdPromise<Buffer[]>((resolve, reject) => {
+  return new BluebirdPromise<string>((resolve, reject) => {
     execFile(file, <any>args, options, function (error, stdout, stderr) {
       if (error == null) {
-        resolve(<any>[stdout, stderr])
+        resolve(stdout)
       }
       else {
         if (stdout.length !== 0) {
@@ -124,6 +124,11 @@ export function handleProcess(event: string, childProcess: ChildProcess, command
 }
 
 export async function getElectronVersion(packageData: any, packageJsonPath: string): Promise<string> {
+  const build = packageData.build
+  // build is required, but this check is performed later, so, we should check for null
+  if (build != null && build.electronVersion != null) {
+    return build.electronVersion
+  }
   try {
     return (await readJson(path.join(path.dirname(packageJsonPath), "node_modules", "electron-prebuilt", "package.json"))).version
   }
@@ -133,19 +138,28 @@ export async function getElectronVersion(packageData: any, packageJsonPath: stri
     }
   }
 
-  const devDependencies = packageData.devDependencies
-  let electronPrebuiltDep = devDependencies == null ? null : devDependencies["electron-prebuilt"]
-  if (electronPrebuiltDep == null) {
-    const dependencies = packageData.dependencies
-    electronPrebuiltDep = dependencies == null ? null : dependencies["electron-prebuilt"]
-  }
-
+  const electronPrebuiltDep = findFromElectronPrebuilt(packageData)
   if (electronPrebuiltDep == null) {
     throw new Error("Cannot find electron-prebuilt dependency to get electron version in the '" + packageJsonPath + "'")
   }
 
   const firstChar = electronPrebuiltDep[0]
   return firstChar === "^" || firstChar === "~" ? electronPrebuiltDep.substring(1) : electronPrebuiltDep
+}
+
+function findFromElectronPrebuilt(packageData: any): any {
+  for (let name of ["electron-prebuilt", "electron-prebuilt-compile"]) {
+    const devDependencies = packageData.devDependencies
+    let electronPrebuiltDep = devDependencies == null ? null : devDependencies[name]
+    if (electronPrebuiltDep == null) {
+      const dependencies = packageData.dependencies
+      electronPrebuiltDep = dependencies == null ? null : dependencies[name]
+    }
+    if (electronPrebuiltDep != null) {
+      return electronPrebuiltDep
+    }
+  }
+  return null
 }
 
 export async function statOrNull(file: string): Promise<Stats | null> {
@@ -203,5 +217,5 @@ export function debug7zArgs(command: "a" | "x"): Array<string> {
 let tmpDirCounter = 0
 
 export function getTempName(prefix?: string | n): string {
-  return `${prefix == null ? "" : prefix + "-"}${process.pid}-${tmpDirCounter++}-${Date.now()}`
+  return `${prefix == null ? "" : prefix + "-"}${process.pid}-${tmpDirCounter++}`
 }

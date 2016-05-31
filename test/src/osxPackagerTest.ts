@@ -2,12 +2,12 @@ import test from "./helpers/avaEx"
 import { assertPack, platform, modifyPackageJson, signed } from "./helpers/packTester"
 import { Platform } from "out"
 import OsXPackager from "out/osxPackager"
-import { move, writeFile, deleteFile } from "fs-extra-p"
+import { move, writeFile, deleteFile, remove } from "fs-extra-p"
 import * as path from "path"
 import { BuildInfo, PackagerOptions } from "out/platformPackager"
 import { Promise as BluebirdPromise } from "bluebird"
 import * as assertThat from "should/as-function"
-import ElectronPackagerOptions = ElectronPackager.ElectronPackagerOptions
+import { ElectronPackagerOptions } from "electron-packager-tf"
 import { OsXBuildOptions } from "out/metadata"
 import { SignOptions, FlatOptions } from "electron-osx-sign-tf"
 
@@ -50,55 +50,49 @@ test.ifOsx("mas and 7z", createTargetTest(["mas", "7z"], ["TestApp-1.1.0-osx.7z"
 
 test.ifOsx("custom mas", () => {
   let platformPackager: CheckingOsXPackager = null
-  return assertPack("test-app-one", {
+  return assertPack("test-app-one", signed({
     platform: [Platform.OSX],
     platformPackagerFactory: (packager, platform, cleanupTasks) => platformPackager = new CheckingOsXPackager(packager, cleanupTasks),
     devMetadata: {
       build: {
         osx: {
-          identity: "osx",
-          target: ["mas"]
+          target: ["mas"],
+          identity: "Test Test",
         },
         mas: {
-          identity: "MAS",
           entitlements: "mas-entitlements file path",
           entitlementsInherit: "mas-entitlementsInherit file path",
         }
       }
     }
-  }, {
+  }), {
     packed: () => {
       assertThat(platformPackager.effectiveSignOptions).has.properties({
-        identity: "osx",
+        identity: "Test Test",
         entitlements: "mas-entitlements file path",
         "entitlements-inherit": "mas-entitlementsInherit file path",
-      })
-      assertThat(platformPackager.effectiveFlatOptions).has.properties({
-        identity: "MAS",
       })
       return BluebirdPromise.resolve(null)
     }
   })
 })
 
-test.ifOsx("identity in package.json", () => {
+test.ifOsx("entitlements in the package.json", () => {
   let platformPackager: CheckingOsXPackager = null
-  return assertPack("test-app-one", {
+  return assertPack("test-app-one", signed({
     platform: [Platform.OSX],
     platformPackagerFactory: (packager, platform, cleanupTasks) => platformPackager = new CheckingOsXPackager(packager, cleanupTasks),
     devMetadata: {
       build: {
         osx: {
-          identity: "osx",
           entitlements: "osx-entitlements file path",
           entitlementsInherit: "osx-entitlementsInherit file path",
         }
       }
     }
-  }, {
+  }), {
     packed: () => {
       assertThat(platformPackager.effectiveSignOptions).has.properties({
-        identity: "osx",
         entitlements: "osx-entitlements file path",
         "entitlements-inherit": "osx-entitlementsInherit file path",
       })
@@ -109,24 +103,16 @@ test.ifOsx("identity in package.json", () => {
 
 test.ifOsx("entitlements in build dir", () => {
   let platformPackager: CheckingOsXPackager = null
-  return assertPack("test-app-one", {
+  return assertPack("test-app-one", signed({
     platform: [Platform.OSX],
     platformPackagerFactory: (packager, platform, cleanupTasks) => platformPackager = new CheckingOsXPackager(packager, cleanupTasks),
-    devMetadata: {
-      build: {
-        osx: {
-          identity: "osx",
-        }
-      }
-    }
-  }, {
+  }), {
     tempDirCreated: projectDir => BluebirdPromise.all([
       writeFile(path.join(projectDir, "build", "osx.entitlements"), ""),
       writeFile(path.join(projectDir, "build", "osx.inherit.entitlements"), ""),
     ]),
     packed: projectDir => {
       assertThat(platformPackager.effectiveSignOptions).has.properties({
-        identity: "osx",
         entitlements: path.join(projectDir, "build", "osx.entitlements"),
         "entitlements-inherit": path.join(projectDir, "build", "osx.inherit.entitlements"),
       })
@@ -137,6 +123,10 @@ test.ifOsx("entitlements in build dir", () => {
 
 test.ifOsx("no background", (t: any) => assertPack("test-app-one", platform(Platform.OSX), {
   tempDirCreated: projectDir => deleteFile(path.join(projectDir, "build", "background.png"))
+}))
+
+test.ifOsx("no build directory", (t: any) => assertPack("test-app-one", platform(Platform.OSX), {
+  tempDirCreated: projectDir => remove(path.join(projectDir, "build"))
 }))
 
 test.ifOsx("custom background", () => {

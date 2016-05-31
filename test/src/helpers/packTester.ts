@@ -62,7 +62,6 @@ export async function assertPack(fixtureName: string, packagerOptions: PackagerO
 
     await packAndCheck(projectDir, Object.assign({
       projectDir: projectDir,
-      dist: true,
     }, packagerOptions), checkOptions)
 
     if (checkOptions != null && checkOptions.packed != null) {
@@ -97,7 +96,7 @@ async function packAndCheck(projectDir: string, packagerOptions: PackagerOptions
 
   await packager.build()
 
-  if (!packagerOptions.dist || packagerOptions.platformPackagerFactory != null) {
+  if ((packagerOptions.target != null && packagerOptions.target.length === 1 && packagerOptions.target[0] === "dir") || packagerOptions.platformPackagerFactory != null) {
     return
   }
 
@@ -154,7 +153,7 @@ async function checkLinuxResult(projectDir: string, packager: Packager, packager
     assertThat(await getContents(`${projectDir}/${outDirName}/TestApp-1.1.0-i386.deb`, productName)).deepEqual(expectedContents)
   }
 
-  assertThat(parseDebControl((await exec("dpkg", ["--info", packageFile])).toString())).has.properties({
+  assertThat(parseDebControl(await exec("dpkg", ["--info", packageFile]))).has.properties({
     License: "MIT",
     Homepage: "http://foo.example.com",
     Maintainer: "Foo Bar <foo@example.com>",
@@ -195,9 +194,9 @@ async function checkOsXResult(packager: Packager, packagerOptions: PackagerOptio
     CFBundleVersion: "1.1.0" + "." + (process.env.TRAVIS_BUILD_NUMBER || process.env.CIRCLE_BUILD_NUM)
   })
 
-  if (packagerOptions.csaLink != null) {
+  if (packagerOptions.cscLink != null) {
     const result = await exec("codesign", ["--verify", packedAppDir])
-    assertThat(result[0].toString()).not.match(/is not signed at all/)
+    assertThat(result).not.match(/is not signed at all/)
   }
 
   const actualFiles = artifacts.map(it => path.basename(it.file)).sort()
@@ -256,7 +255,7 @@ async function checkWindowsResult(packager: Packager, packagerOptions: PackagerO
   const expectedContents = checkOptions == null || checkOptions.expectedContents == null ? expectedWinContents : checkOptions.expectedContents
   assertThat(files).deepEqual(expectedContents.map(it => {
     if (it === "lib/net45/TestApp.exe") {
-      return `lib/net45/${productName}.exe`
+      return `lib/net45/${encodeURI(productName)}.exe`
     }
     else {
       return it
@@ -289,7 +288,7 @@ async function checkWindowsResult(packager: Packager, packagerOptions: PackagerO
 
 async function getContents(path: string, productName: string) {
   const result = await exec("dpkg", ["--contents", path])
-  return pathSorter(result[0].toString()
+  return pathSorter(result
     .split("\n")
     .map(it => it.length === 0 ? null : it.substring(it.indexOf(".") + 1))
     .filter(it => it != null && !(it.startsWith(`/opt/${productName}/locales/`) || it.startsWith(`/opt/${productName}/libgcrypt`)))
