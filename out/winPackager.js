@@ -22,10 +22,6 @@ class WinPackager extends platformPackager_1.PlatformPackager {
             this.certFilePromise = bluebird_1.Promise.resolve(null);
         }
         this.iconPath = this.getValidIconPath();
-        if (this.options.dist && this.customBuildOptions.loadingGif == null) {
-            const installSpinnerPath = path.join(this.buildResourcesDir, "install-spinner.gif");
-            this.loadingGifStat = util_1.statOrNull(installSpinnerPath).then(it => it != null && !it.isDirectory() ? installSpinnerPath : null);
-        }
     }
     get platform() {
         return metadata_1.Platform.WINDOWS;
@@ -47,24 +43,19 @@ class WinPackager extends platformPackager_1.PlatformPackager {
             }
             // we must check icon before pack because electron-packager uses icon and it leads to cryptic error message "spawn wine ENOENT"
             yield this.iconPath;
-            let appOutDir = this.computeAppOutDir(outDir, arch);
-            const packOptions = this.computePackOptions(outDir, arch);
-            if (!this.options.dist) {
+            const appOutDir = this.computeAppOutDir(outDir, arch);
+            const packOptions = this.computePackOptions(outDir, appOutDir, arch);
+            if (!(this.targets.indexOf("default") !== -1)) {
                 yield this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions);
                 return;
             }
-            const unpackedDir = path.join(outDir, `win${ arch === "x64" ? "" : `-${ arch }` }-unpacked`);
-            const finalAppOut = path.join(unpackedDir, "lib", "net45");
             const installerOut = computeDistOut(outDir, arch);
-            util_1.log("Removing %s and %s", path.relative(this.projectDir, installerOut), path.relative(this.projectDir, unpackedDir));
-            yield bluebird_1.Promise.all([this.packApp(packOptions, appOutDir), fs_extra_p_1.emptyDir(installerOut), fs_extra_p_1.emptyDir(unpackedDir)]);
-            yield fs_extra_p_1.move(appOutDir, finalAppOut);
-            appOutDir = finalAppOut;
-            yield this.copyExtraResources(appOutDir, arch, this.customBuildOptions);
-            if (this.options.dist) {
-                postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch, packOptions));
-            }
+            yield bluebird_1.Promise.all([this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions), fs_extra_p_1.emptyDir(installerOut)]);
+            postAsyncTasks.push(this.packageInDistributableFormat(appOutDir, installerOut, arch, packOptions));
         });
+    }
+    computeAppOutDir(outDir, arch) {
+        return path.join(outDir, `win${ arch === "x64" ? "" : `-${ arch }` }-unpacked`);
     }
     packApp(options, appOutDir) {
         const _super = name => super[name];
@@ -79,7 +70,8 @@ class WinPackager extends platformPackager_1.PlatformPackager {
                     password: this.options.cscKeyPassword,
                     name: this.appName,
                     site: yield this.computePackageUrl(),
-                    overwrite: true
+                    overwrite: true,
+                    hash: this.customBuildOptions.signingHashAlgorithms
                 });
             }
         });
@@ -124,25 +116,27 @@ class WinPackager extends platformPackager_1.PlatformPackager {
                 fixUpPaths: false,
                 skipUpdateIcon: true,
                 usePackageJson: false,
-                msi: false,
                 extraMetadataSpecs: projectUrl == null ? null : `\n    <projectUrl>${ projectUrl }</projectUrl>`,
                 copyright: packOptions["app-copyright"],
                 sign: {
                     name: this.appName,
                     site: projectUrl,
-                    overwrite: true
+                    overwrite: true,
+                    hash: this.customBuildOptions.signingHashAlgorithms
                 },
                 rcedit: rceditOptions
             }, this.customBuildOptions);
-            if (this.loadingGifStat != null) {
-                options.loadingGif = yield this.loadingGifStat;
+            if (!("loadingGif" in options)) {
+                const resourceList = yield this.resourceList;
+                if (resourceList.indexOf("install-spinner.gif") !== -1) {
+                    options.loadingGif = path.join(this.buildResourcesDir, "install-spinner.gif");
+                }
             }
             return options;
         });
     }
-    packageInDistributableFormat(outDir, appOutDir, arch, packOptions) {
+    packageInDistributableFormat(appOutDir, installerOutDir, arch, packOptions) {
         return __awaiter(this, void 0, void 0, function* () {
-            const installerOutDir = computeDistOut(outDir, arch);
             const winstaller = require("electron-winstaller-fixed");
             const version = this.metadata.version;
             const archSuffix = arch === "x64" ? "" : "-" + arch;

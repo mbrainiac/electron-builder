@@ -3,7 +3,7 @@
 const metadata_1 = require("./metadata");
 const bluebird_1 = require("bluebird");
 const path = require("path");
-const packager = require("electron-packager-tf");
+const electron_packager_tf_1 = require("electron-packager-tf");
 const globby = require("globby");
 const fs_extra_p_1 = require("fs-extra-p");
 const util_1 = require("./util");
@@ -12,7 +12,6 @@ const asar_1 = require("asar");
 const _7zip_bin_1 = require("7zip-bin");
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("./awaiter");
-const pack = bluebird_1.Promise.promisify(packager);
 class CompressionDescriptor {
     constructor(flag, env, minLevel) {
         let maxLevel = arguments.length <= 3 || arguments[3] === undefined ? "-9" : arguments[3];
@@ -29,6 +28,12 @@ const extToCompressionDescriptor = {
     "tar.gz": new CompressionDescriptor("--gz", "GZIP", "-1"),
     "tar.bz2": new CompressionDescriptor("--bzip2", "BZIP2", "-1")
 };
+exports.commonTargets = ["dir", "zip", "7z", "tar.xz", "tar.lz", "tar.gz", "tar.bz2"];
+// class Target {
+//   constructor(public platform: Platform, arch?: "ia32" | "x64")
+// }
+//
+exports.DIR_TARGET = "dir";
 class PlatformPackager {
     constructor(info) {
         this.info = info;
@@ -39,24 +44,37 @@ class PlatformPackager {
         this.buildResourcesDir = path.resolve(this.projectDir, this.relativeBuildResourcesDirname);
         this.customBuildOptions = info.devMetadata.build[this.platform.buildConfigurationKey] || Object.create(null);
         this.appName = metadata_1.getProductName(this.metadata, this.devMetadata);
-        const targets = normalizeTargets(this.customBuildOptions.target);
+        let targets = normalizeTargets(this.customBuildOptions.target);
+        const cliTargets = normalizeTargets(this.options.target);
+        if (cliTargets != null) {
+            targets = cliTargets;
+        }
         if (targets != null) {
-            const supportedTargets = this.supportedTargets.concat("default", "zip", "7z", "tar.xz", "tar.lz", "tar.gz", "tar.bz2");
+            const supportedTargets = this.supportedTargets.concat(exports.commonTargets);
             for (let target of targets) {
-                if (!(supportedTargets.indexOf(target) !== -1)) {
-                    throw new Error("Unknown target: " + target);
+                if (target !== "default" && !(supportedTargets.indexOf(target) !== -1)) {
+                    throw new Error(`Unknown target: ${ target }`);
                 }
             }
         }
         this.targets = targets == null ? ["default"] : targets;
+        this.resourceList = fs_extra_p_1.readdir(this.buildResourcesDir).catch(e => {
+            if (e.code !== "ENOENT") {
+                throw e;
+            }
+            return [];
+        });
     }
     get platform() {}
+    hasOnlyDirTarget() {
+        return this.targets.length === 1 && this.targets[0] === "dir";
+    }
     get relativeBuildResourcesDirname() {
         return util_1.use(this.devMetadata.directories, it => it.buildResources) || "build";
     }
     get supportedTargets() {}
     computeAppOutDir(outDir, arch) {
-        return path.join(outDir, `${ this.appName }-${ this.platform.nodeName }-${ arch }`);
+        return path.join(outDir, `${ this.platform.buildConfigurationKey }${ arch === "x64" ? "" : `-${ arch }` }`);
     }
     dispatchArtifactCreated(file, artifactName) {
         this.info.eventEmitter.emit("artifactCreated", {
@@ -68,10 +86,10 @@ class PlatformPackager {
     doPack(options, outDir, appOutDir, arch, customBuildOptions) {
         return __awaiter(this, void 0, void 0, function* () {
             yield this.packApp(options, appOutDir);
-            yield this.copyExtraResources(appOutDir, arch, customBuildOptions);
+            yield this.copyExtraFiles(appOutDir, arch, customBuildOptions);
         });
     }
-    computePackOptions(outDir, arch) {
+    computePackOptions(outDir, appOutDir, arch) {
         const version = this.metadata.version;
         let buildVersion = version;
         const buildNumber = this.computeBuildNumber();
@@ -93,6 +111,7 @@ class PlatformPackager {
             "app-copyright": `Copyright © ${ new Date().getFullYear() } ${ this.metadata.author.name || this.appName }`,
             "build-version": buildVersion,
             tmpdir: false,
+            generateFinalBasename: () => path.basename(appOutDir),
             "version-string": {
                 CompanyName: this.metadata.author.name,
                 FileDescription: smarten(this.metadata.description),
@@ -109,7 +128,7 @@ class PlatformPackager {
     }
     packApp(options, appOutDir) {
         return __awaiter(this, void 0, void 0, function* () {
-            yield pack(options);
+            yield electron_packager_tf_1.pack(options);
             const afterPack = this.devMetadata.build.afterPack;
             if (afterPack != null) {
                 yield afterPack({
@@ -120,26 +139,29 @@ class PlatformPackager {
             yield this.sanityCheckPackage(appOutDir, options.asar);
         });
     }
-    getExtraResources(arch, customBuildOptions) {
+    getExtraResources(isResources, arch, customBuildOptions) {
         const buildMetadata = this.devMetadata.build;
-        let extraResources = buildMetadata == null ? null : buildMetadata.extraResources;
-        const platformSpecificExtraResources = customBuildOptions.extraResources;
-        if (platformSpecificExtraResources != null) {
-            extraResources = extraResources == null ? platformSpecificExtraResources : extraResources.concat(platformSpecificExtraResources);
+        let extra = buildMetadata == null ? null : buildMetadata[isResources ? "extraResources" : "extraFiles"];
+        const platformSpecificExtra = isResources ? customBuildOptions.extraResources : customBuildOptions.extraFiles;
+        if (platformSpecificExtra != null) {
+            extra = extra == null ? platformSpecificExtra : extra.concat(platformSpecificExtra);
         }
-        if (extraResources == null) {
+        if (extra == null) {
             return bluebird_1.Promise.resolve([]);
         }
-        const expandedPatterns = extraResources.map(it => it.replace(/\$\{arch}/g, arch).replace(/\$\{os}/g, this.platform.buildConfigurationKey));
+        const expandedPatterns = extra.map(it => it.replace(/\$\{arch}/g, arch).replace(/\$\{os}/g, this.platform.buildConfigurationKey));
         return globby(expandedPatterns, { cwd: this.projectDir });
     }
-    copyExtraResources(appOutDir, arch, customBuildOptions) {
+    copyExtraFiles(appOutDir, arch, customBuildOptions) {
         return __awaiter(this, void 0, void 0, function* () {
-            let resourcesDir = appOutDir;
-            if (this.platform === metadata_1.Platform.OSX) {
-                resourcesDir = this.getOSXResourcesDir(appOutDir);
-            }
-            return yield bluebird_1.Promise.map((yield this.getExtraResources(arch, customBuildOptions)), it => fs_extra_p_1.copy(path.join(this.projectDir, it), path.join(resourcesDir, it)));
+            yield this.doCopyExtraFiles(true, appOutDir, arch, customBuildOptions);
+            yield this.doCopyExtraFiles(false, appOutDir, arch, customBuildOptions);
+        });
+    }
+    doCopyExtraFiles(isResources, appOutDir, arch, customBuildOptions) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const base = isResources ? this.getResourcesDir(appOutDir) : this.platform === metadata_1.Platform.OSX ? path.join(appOutDir, `${ this.appName }.app`, "Contents") : appOutDir;
+            return yield bluebird_1.Promise.map((yield this.getExtraResources(isResources, arch, customBuildOptions)), it => fs_extra_p_1.copy(path.join(this.projectDir, it), path.join(base, it)));
         });
     }
     computePackageUrl() {
@@ -164,7 +186,7 @@ class PlatformPackager {
         return this.platform === metadata_1.Platform.OSX ? this.getOSXResourcesDir(appOutDir) : path.join(appOutDir, "resources");
     }
     getOSXResourcesDir(appOutDir) {
-        return path.join(appOutDir, this.appName + ".app", "Contents", "Resources");
+        return path.join(appOutDir, `${ this.appName }.app`, "Contents", "Resources");
     }
     statFileInPackage(resourcesDir, packageFile, isAsar) {
         return __awaiter(this, void 0, void 0, function* () {
@@ -173,6 +195,16 @@ class PlatformPackager {
                 try {
                     return asar_1.statFile(path.join(resourcesDir, "app.asar"), relativeFile) != null;
                 } catch (e) {
+                    const asarFile = path.join(resourcesDir, "app.asar");
+                    const fileStat = yield util_1.statOrNull(asarFile);
+                    if (fileStat == null) {
+                        throw new Error(`File "${ asarFile }" does not exist. Seems like a wrong configuration.`);
+                    }
+                    try {
+                        asar_1.listPackage(asarFile);
+                    } catch (e) {
+                        throw new Error(`File "${ asarFile }" is corrupted: ${ e }`);
+                    }
                     // asar throws error on access to undefined object (info.link)
                     return false;
                 }
@@ -182,31 +214,15 @@ class PlatformPackager {
             }
         });
     }
-    static sanityCheckAsar(asarFile) {
-        return __awaiter(this, void 0, void 0, function* () {
-            const outStat = yield util_1.statOrNull(asarFile);
-            if (outStat == null) {
-                throw new Error(`Package file ${ asarFile } was not created.`);
-            }
-            try {
-                asar_1.listPackage(asarFile);
-            } catch (e) {
-                throw new Error(`Package file ${ asarFile } is corrupted.`);
-            }
-        });
-    }
     sanityCheckPackage(appOutDir, isAsar) {
         return __awaiter(this, void 0, void 0, function* () {
             const outStat = yield util_1.statOrNull(appOutDir);
             if (outStat == null) {
-                throw new Error(`Output directory ${ appOutDir } does not exists. Seems like a wrong configuration.`);
+                throw new Error(`Output directory "${ appOutDir }" does not exist. Seems like a wrong configuration.`);
             } else if (!outStat.isDirectory()) {
-                throw new Error(`Output directory ${ appOutDir } is not a directory. Seems like a wrong configuration.`);
+                throw new Error(`Output directory "${ appOutDir }" is not a directory. Seems like a wrong configuration.`);
             }
             const resourcesDir = this.getResourcesDir(appOutDir);
-            if (isAsar) {
-                yield PlatformPackager.sanityCheckAsar(path.join(resourcesDir, "app.asar"));
-            }
             const mainFile = this.metadata.main || "index.js";
             const mainFileExists = yield this.statFileInPackage(resourcesDir, mainFile, isAsar);
             if (!mainFileExists) {

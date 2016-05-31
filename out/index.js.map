@@ -6,8 +6,8 @@
     "../src/index.ts"
   ],
   "names": [],
-  "mappings": ";;AAAA,yBAAyB,AACzB,AAAC;AADQ,8BAA4B;AAErC,wBAAqD,AACrD,AAAC;AADsB,0BAAK;AAAE,oCAAkC;AAEhE,yBAAuI,AAAY,AAAC;AAAjH,8BAAQ;AAAE,oCAAsG",
+  "mappings": ";;AAAA,yBAAyB,AACzB,AAAC;AADQ,8BAA4B;AACrC,iCAA6D,AAC7D,AAAC;AAD0C,wCAAsC;AACjF,wBAAqD,AACrD,AAAC;AADsB,0BAAK;AAAE,oCAAkC;AAEhE,yBAAuI,AAAY,AAAC;AAAjH,8BAAQ;AAAE,oCAAsG",
   "sourcesContent": [
-    "export { Packager } from \"./packager\"\nexport { PackagerOptions, ArtifactCreated } from \"./platformPackager\"\nexport { BuildOptions, build, createPublisher } from \"./builder\"\nexport { PublishOptions, Publisher } from \"./gitHubPublisher\"\nexport { AppMetadata, DevMetadata, Platform, getProductName, BuildMetadata, OsXBuildOptions, WinBuildOptions, LinuxBuildOptions } from \"./metadata\""
+    "export { Packager } from \"./packager\"\nexport { PackagerOptions, ArtifactCreated, DIR_TARGET } from \"./platformPackager\"\nexport { BuildOptions, build, createPublisher } from \"./builder\"\nexport { PublishOptions, Publisher } from \"./gitHubPublisher\"\nexport { AppMetadata, DevMetadata, Platform, getProductName, BuildMetadata, OsXBuildOptions, WinBuildOptions, LinuxBuildOptions } from \"./metadata\""
   ]
 }

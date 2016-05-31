@@ -21,7 +21,7 @@ class LinuxPackager extends platformPackager_1.PlatformPackager {
             name: this.metadata.name,
             description: this.metadata.description
         }, this.customBuildOptions);
-        if (this.options.dist) {
+        if (!this.hasOnlyDirTarget()) {
             const tempDir = path.join(os_1.tmpdir(), util_1.getTempName("electron-builder-linux"));
             const tempDirPromise = fs_extra_p_1.emptyDir(tempDir).then(() => {
                 cleanupTasks.push(() => fs_extra_p_1.remove(tempDir));
@@ -58,16 +58,14 @@ class LinuxPackager extends platformPackager_1.PlatformPackager {
     pack(outDir, arch, postAsyncTasks) {
         return __awaiter(this, void 0, void 0, function* () {
             const appOutDir = this.computeAppOutDir(outDir, arch);
-            yield this.doPack(this.computePackOptions(outDir, arch), outDir, appOutDir, arch, this.customBuildOptions);
-            if (this.options.dist) {
-                for (let target of this.targets) {
-                    if (target === "zip" || target === "7z" || target.startsWith("tar.")) {
-                        const destination = path.join(outDir, `${ this.metadata.name }-${ this.metadata.version }${ platformPackager_1.archSuffix(arch) }.${ target }`);
-                        yield this.archiveApp(target, appOutDir, destination).then(() => this.dispatchArtifactCreated(destination));
-                    }
+            yield this.doPack(this.computePackOptions(outDir, appOutDir, arch), outDir, appOutDir, arch, this.customBuildOptions);
+            for (let target of this.targets) {
+                if (target === "zip" || target === "7z" || target.startsWith("tar.")) {
+                    const destination = path.join(outDir, `${ this.metadata.name }-${ this.metadata.version }${ platformPackager_1.archSuffix(arch) }.${ target }`);
+                    yield this.archiveApp(target, appOutDir, destination).then(() => this.dispatchArtifactCreated(destination));
                 }
-                postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch));
             }
+            postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch));
         });
     }
     computeDesktop(tempDir) {
@@ -112,8 +110,7 @@ Icon=${ this.metadata.name }
     }
     createFromIcns(tempDir) {
         return __awaiter(this, void 0, void 0, function* () {
-            const outputs = yield util_1.exec("icns2png", ["-x", "-o", tempDir, path.join(this.buildResourcesDir, "icon.icns")]);
-            const output = outputs[0].toString();
+            const output = yield util_1.exec("icns2png", ["-x", "-o", tempDir, path.join(this.buildResourcesDir, "icon.icns")]);
             util_1.debug(output);
             const imagePath = path.join(tempDir, "icon_256x256x32.png");
             function resize(size) {
@@ -161,9 +158,10 @@ Icon=${ this.metadata.name }
             // todo fix fpm - if we run in parallel, get strange tar errors
             for (let target of this.targets) {
                 target = target === "default" ? "deb" : target;
-                if (target !== "zip" && target !== "7z" && !target.startsWith("tar.")) {
+                if (target !== "dir" && target !== "zip" && target !== "7z" && !target.startsWith("tar.")) {
                     const destination = path.join(outDir, `${ this.metadata.name }-${ this.metadata.version }${ platformPackager_1.archSuffix(arch) }.${ target }`);
-                    yield this.buildPackage(destination, target, this.buildOptions, appOutDir, arch).then(() => this.dispatchArtifactCreated(destination));
+                    yield this.buildPackage(destination, target, this.buildOptions, appOutDir, arch);
+                    this.dispatchArtifactCreated(destination);
                 }
             }
         });

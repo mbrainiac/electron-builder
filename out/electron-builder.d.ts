@@ -28,13 +28,15 @@ declare module 'electron-builder/out/codeSign' {
 
   export function generateKeychainName(): string
 
-  export function createKeychain(keychainName: string, cscLink: string, cscKeyPassword: string, cscILink?: string | null, cscIKeyPassword?: string | null, csaLink?: string | null): Promise<CodeSigningInfo>
+  export function createKeychain(keychainName: string, cscLink: string, cscKeyPassword: string, cscILink?: string | null, cscIKeyPassword?: string | null): Promise<CodeSigningInfo>
 
   export function sign(path: string, options: CodeSigningInfo): BluebirdPromise<any>
 
   export function deleteKeychain(keychainName: string, ignoreNotFound?: boolean): BluebirdPromise<any>
 
   export function downloadCertificate(cscLink: string): Promise<string>
+
+  export function findIdentity(namePrefix: string, qualifier?: string): Promise<string | null>
 }
 
 declare module 'electron-builder/out/errorMessages' {
@@ -97,7 +99,7 @@ declare module 'electron-builder/out/httpRequest' {
 
 declare module 'electron-builder' {
   export { Packager } from "electron-builder/out/packager"
-  export { PackagerOptions, ArtifactCreated } from "electron-builder/out/platformPackager"
+  export { PackagerOptions, ArtifactCreated, DIR_TARGET } from "electron-builder/out/platformPackager"
   export { BuildOptions, build, createPublisher } from "electron-builder/out/builder"
   export { PublishOptions, Publisher } from "electron-builder/out/gitHubPublisher"
   export { AppMetadata, DevMetadata, Platform, getProductName, BuildMetadata, OsXBuildOptions, WinBuildOptions, LinuxBuildOptions } from "electron-builder/out/metadata"
@@ -117,7 +119,7 @@ declare module 'electron-builder/out/linuxPackager' {
 }
 
 declare module 'electron-builder/out/metadata' {
-  import ElectronPackagerOptions = ElectronPackager.ElectronPackagerOptions
+  import { ElectronPackagerOptions } from "electron-packager-tf"
 
   export interface Metadata {
     readonly repository?: string | RepositoryInfo | null
@@ -157,7 +159,7 @@ declare module 'electron-builder/out/metadata' {
     readonly iconUrl?: string | null
     readonly productName?: string | null
     /**
-     A [glob expression](https://www.npmjs.com/package/glob#glob-primer), when specified, copy the file or directory with matching names directly into the app's directory (`Contents/Resources` for OS X).
+     A [glob expression](https://www.npmjs.com/package/glob#glob-primer), when specified, copy the file or directory with matching names directly into the app's resources directory (`Contents/Resources` for OS X, `resources` for Linux/Windows).
   
      You can use `${os}` (expanded to osx, linux or win according to current platform) and `${arch}` in the pattern.
   
@@ -166,6 +168,10 @@ declare module 'electron-builder/out/metadata' {
      May be specified in the platform options (i.e. in the `build.osx`).
      */
     readonly extraResources?: Array<string> | null
+    /**
+     The same as [extraResources](#BuildMetadata-extraResources) but copy into the app's content directory (`Contents` for OS X, `` for Linux/Windows).
+     */
+    readonly extraFiles?: Array<string> | null
     readonly osx?: OsXBuildOptions | null
     readonly mas?: MasBuildOptions | null
     /**
@@ -193,7 +199,6 @@ declare module 'electron-builder/out/metadata' {
   }
 
   export interface MasBuildOptions extends OsXBuildOptions {
-    readonly identity?: string | null
     readonly entitlements?: string | null
     readonly entitlementsInherit?: string | null
   }
@@ -206,6 +211,8 @@ declare module 'electron-builder/out/metadata' {
     readonly msi?: boolean
     readonly remoteReleases?: string | null
     readonly remoteToken?: string | null
+    readonly signingHashAlgorithms?: Array<string> | null
+    readonly signcodePath?: string | null
   }
 
   export interface LinuxBuildOptions extends PlatformSpecificBuildOptions {
@@ -229,6 +236,7 @@ declare module 'electron-builder/out/metadata' {
   }
 
   export interface PlatformSpecificBuildOptions {
+    readonly extraFiles?: Array<string> | null
     readonly extraResources?: Array<string> | null
     readonly target?: Array<string> | null
   }
@@ -256,7 +264,6 @@ declare module 'electron-builder/out/osxPackager' {
 
   export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
     codeSigningInfo: Promise<CodeSigningInfo | null>
-    readonly resourceList: Promise<Array<string>>
     constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>)
     readonly platform: Platform
     protected readonly supportedTargets: Array<string>
@@ -298,29 +305,28 @@ declare module 'electron-builder/out/platformPackager' {
   import { InfoRetriever, ProjectMetadataProvider } from "electron-builder/out/repositoryInfo"
   import { AppMetadata, DevMetadata, Platform, PlatformSpecificBuildOptions } from "electron-builder/out/metadata"
   import EventEmitter = NodeJS.EventEmitter
+  import { ElectronPackagerOptions } from "electron-packager-tf"
   import { Packager } from "electron-builder/out/packager"
-  import ElectronPackagerOptions = ElectronPackager.ElectronPackagerOptions
+  export const commonTargets: string[]
+  export const DIR_TARGET: string
 
   export interface PackagerOptions {
-    arch?: string | null
-    dist?: boolean | null
-    githubToken?: string | null
-    sign?: string | null
+    target?: Array<string> | null
     platform?: Array<Platform> | null
-    appDir?: string | null
+    arch?: string | null
     projectDir?: string | null
     cscLink?: string | null
-    csaLink?: string | null
     cscKeyPassword?: string | null
     cscInstallerLink?: string | null
     cscInstallerKeyPassword?: string | null
-    platformPackagerFactory?: ((packager: Packager, platform: Platform, cleanupTasks: Array<() => Promise<any>>) => PlatformPackager<any>) | n
+    platformPackagerFactory?: ((packager: Packager, platform: Platform, cleanupTasks: Array<() => Promise<any>>) => PlatformPackager<any>) | null
     /**
      * The same as [development package.json](https://github.com/electron-userland/electron-builder/wiki/Options#development-packagejson).
      *
      * Development `package.json` will be still read, but options specified in this object will override.
      */
     readonly devMetadata?: DevMetadata
+    readonly npmRebuild?: boolean
   }
 
   export interface BuildInfo extends ProjectMetadataProvider {
@@ -343,17 +349,19 @@ declare module 'electron-builder/out/platformPackager' {
     readonly customBuildOptions: DC
     readonly appName: string
     readonly targets: Array<string>
+    readonly resourceList: Promise<Array<string>>
     readonly abstract platform: Platform
     constructor(info: BuildInfo)
+    protected hasOnlyDirTarget(): boolean
     protected readonly relativeBuildResourcesDirname: string
     protected readonly abstract supportedTargets: Array<string>
     protected computeAppOutDir(outDir: string, arch: string): string
     protected dispatchArtifactCreated(file: string, artifactName?: string): void
     abstract pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any>
     protected doPack(options: ElectronPackagerOptions, outDir: string, appOutDir: string, arch: string, customBuildOptions: DC): Promise<void>
-    protected computePackOptions(outDir: string, arch: string): ElectronPackagerOptions
+    protected computePackOptions(outDir: string, appOutDir: string, arch: string): ElectronPackagerOptions
     protected packApp(options: ElectronPackagerOptions, appOutDir: string): Promise<any>
-    protected copyExtraResources(appOutDir: string, arch: string, customBuildOptions: DC): Promise<Array<string>>
+    protected copyExtraFiles(appOutDir: string, arch: string, customBuildOptions: DC): Promise<any>
     protected computePackageUrl(): Promise<string | null>
     protected computeBuildNumber(): string | null
     protected archiveApp(format: string, appOutDir: string, outFile: string): Promise<any>
@@ -434,7 +442,7 @@ declare module 'electron-builder/out/util' {
     killSignal?: string
   }
 
-  export function exec(file: string, args?: Array<string> | null, options?: ExecOptions): BluebirdPromise<Buffer[]>
+  export function exec(file: string, args?: Array<string> | null, options?: ExecOptions): BluebirdPromise<string>
 
   export function doSpawn(command: string, args: Array<string>, options?: SpawnOptions): ChildProcess
 
@@ -458,19 +466,19 @@ declare module 'electron-builder/out/util' {
 declare module 'electron-builder/out/winPackager' {
   import { PlatformPackager, BuildInfo } from "electron-builder/out/platformPackager"
   import { Platform, WinBuildOptions } from "electron-builder/out/metadata"
-  import ElectronPackagerOptions = ElectronPackager.ElectronPackagerOptions
+  import { ElectronPackagerOptions } from "electron-packager-tf"
 
   export class WinPackager extends PlatformPackager<WinBuildOptions> {
     certFilePromise: Promise<string | null>
-    loadingGifStat: Promise<string> | null
     readonly iconPath: Promise<string>
     constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>)
     readonly platform: Platform
     protected readonly supportedTargets: Array<string>
     pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any>
+    protected computeAppOutDir(outDir: string, arch: string): string
     protected packApp(options: any, appOutDir: string): Promise<void>
     protected computeEffectiveDistOptions(appOutDir: string, installerOutDir: string, packOptions: ElectronPackagerOptions, setupExeName: string): Promise<WinBuildOptions>
-    packageInDistributableFormat(outDir: string, appOutDir: string, arch: string, packOptions: ElectronPackagerOptions): Promise<any>
+    protected packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: string, packOptions: ElectronPackagerOptions): Promise<any>
   }
 
   export function computeDistOut(outDir: string, arch: string): string

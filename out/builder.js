@@ -29,20 +29,13 @@ function build(originalOptions) {
     return __awaiter(this, void 0, void 0, function* () {
         const options = Object.assign({
             cscLink: process.env.CSC_LINK,
-            csaLink: process.env.CSA_LINK,
             cscKeyPassword: process.env.CSC_KEY_PASSWORD,
             githubToken: process.env.GH_TOKEN || process.env.GH_TEST_TOKEN
         }, originalOptions);
         options.platform = packager_1.normalizePlatforms(options.platform);
-        const lifecycleEvent = process.env.npm_lifecycle_event;
-        if (options.publish) {
-            options.dist = true;
-        } else if (options.dist === undefined) {
-            options.dist = lifecycleEvent === "dist" || lifecycleEvent === "build" || lifecycleEvent != null && lifecycleEvent.startsWith("dist:");
-        }
         let isPublishOptionGuessed = false;
         if (options.publish === undefined) {
-            if (lifecycleEvent === "release") {
+            if (process.env.npm_lifecycle_event === "release") {
                 options.publish = "always";
             } else if (options.githubToken != null) {
                 const tag = process.env.TRAVIS_TAG || process.env.APPVEYOR_REPO_TAG_NAME || process.env.CIRCLE_TAG;

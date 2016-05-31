@@ -55,7 +55,7 @@ function exec(file, args, options) {
     return new bluebird_1.Promise((resolve, reject) => {
         child_process_1.execFile(file, args, options, function (error, stdout, stderr) {
             if (error == null) {
-                resolve([stdout, stderr]);
+                resolve(stdout);
             } else {
                 if (stdout.length !== 0) {
                     console.log(stdout.toString());
@@ -101,6 +101,11 @@ function handleProcess(event, childProcess, command, resolve, reject) {
 exports.handleProcess = handleProcess;
 function getElectronVersion(packageData, packageJsonPath) {
     return __awaiter(this, void 0, void 0, function* () {
+        const build = packageData.build;
+        // build is required, but this check is performed later, so, we should check for null
+        if (build != null && build.electronVersion != null) {
+            return build.electronVersion;
+        }
         try {
             return (yield fs_extra_p_1.readJson(path.join(path.dirname(packageJsonPath), "node_modules", "electron-prebuilt", "package.json"))).version;
         } catch (e) {
@@ -108,12 +113,7 @@ function getElectronVersion(packageData, packageJsonPath) {
                 warn("Cannot read electron version from electron-prebuilt package.json" + e.message);
             }
         }
-        const devDependencies = packageData.devDependencies;
-        let electronPrebuiltDep = devDependencies == null ? null : devDependencies["electron-prebuilt"];
-        if (electronPrebuiltDep == null) {
-            const dependencies = packageData.dependencies;
-            electronPrebuiltDep = dependencies == null ? null : dependencies["electron-prebuilt"];
-        }
+        const electronPrebuiltDep = findFromElectronPrebuilt(packageData);
         if (electronPrebuiltDep == null) {
             throw new Error("Cannot find electron-prebuilt dependency to get electron version in the '" + packageJsonPath + "'");
         }
@@ -122,6 +122,20 @@ function getElectronVersion(packageData, packageJsonPath) {
     });
 }
 exports.getElectronVersion = getElectronVersion;
+function findFromElectronPrebuilt(packageData) {
+    for (let name of ["electron-prebuilt", "electron-prebuilt-compile"]) {
+        const devDependencies = packageData.devDependencies;
+        let electronPrebuiltDep = devDependencies == null ? null : devDependencies[name];
+        if (electronPrebuiltDep == null) {
+            const dependencies = packageData.dependencies;
+            electronPrebuiltDep = dependencies == null ? null : dependencies[name];
+        }
+        if (electronPrebuiltDep != null) {
+            return electronPrebuiltDep;
+        }
+    }
+    return null;
+}
 function statOrNull(file) {
     return __awaiter(this, void 0, void 0, function* () {
         try {
@@ -175,7 +189,7 @@ function debug7zArgs(command) {
 exports.debug7zArgs = debug7zArgs;
 let tmpDirCounter = 0;
 function getTempName(prefix) {
-    return `${ prefix == null ? "" : prefix + "-" }${ process.pid }-${ tmpDirCounter++ }-${ Date.now() }`;
+    return `${ prefix == null ? "" : prefix + "-" }${ process.pid }-${ tmpDirCounter++ }`;
 }
 exports.getTempName = getTempName;
 //# sourceMappingURL=util.js.map

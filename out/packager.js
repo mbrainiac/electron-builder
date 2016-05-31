@@ -38,7 +38,7 @@ class Packager {
             const devPackageFile = this.devPackageFile;
             const platforms = this.options.platform;
             this.devMetadata = deepAssign((yield util_1.readPackageJson(devPackageFile)), this.options.devMetadata);
-            this.appDir = yield util_1.computeDefaultAppDirectory(this.projectDir, util_1.use(this.devMetadata.directories, it => it.app) || this.options.appDir);
+            this.appDir = yield util_1.computeDefaultAppDirectory(this.projectDir, util_1.use(this.devMetadata.directories, it => it.app));
             this.isTwoPackageJsonProjectLayoutUsed = this.appDir !== this.projectDir;
             const appPackageFile = this.projectDir === this.appDir ? devPackageFile : path.join(this.appDir, "package.json");
             this.metadata = appPackageFile === devPackageFile ? this.devMetadata : yield util_1.readPackageJson(appPackageFile);
@@ -97,16 +97,18 @@ class Packager {
     }
     checkMetadata(appPackageFile, devAppPackageFile, platforms) {
         const reportError = missedFieldName => {
-            throw new Error("Please specify '" + missedFieldName + "' in the application package.json ('" + appPackageFile + "')");
+            throw new Error(`Please specify '${ missedFieldName }' in the application package.json ('${ appPackageFile }')`);
+        };
+        const checkNotEmpty = (name, value) => {
+            if (isEmptyOrSpaces(value)) {
+                reportError(name);
+            }
         };
         const appMetadata = this.metadata;
-        if (appMetadata.name == null) {
-            reportError("name");
-        } else if (appMetadata.description == null) {
-            reportError("description");
-        } else if (appMetadata.version == null) {
-            reportError("version");
-        } else if (appMetadata !== this.devMetadata) {
+        checkNotEmpty("name", appMetadata.name);
+        checkNotEmpty("description", appMetadata.description);
+        checkNotEmpty("version", appMetadata.version);
+        if (appMetadata !== this.devMetadata) {
             if (appMetadata.build != null) {
                 throw new Error(util.format(errorMessages.buildInAppSpecified, appPackageFile, devAppPackageFile));
             }
@@ -123,7 +125,7 @@ class Packager {
             const author = appMetadata.author;
             if (author == null) {
                 reportError("author");
-            } else if (this.options.dist && author.email == null && platforms.indexOf(metadata_1.Platform.LINUX) !== -1) {
+            } else if (author.email == null && platforms.indexOf(metadata_1.Platform.LINUX) !== -1) {
                 throw new Error(util.format(errorMessages.authorEmailIsMissed, appPackageFile));
             }
             if (this.devMetadata.build.name != null) {
@@ -132,7 +134,9 @@ class Packager {
         }
     }
     installAppDependencies(platform, arch) {
-        if (this.isTwoPackageJsonProjectLayoutUsed) {
+        if (!this.options.npmRebuild) {
+            util_1.log("Skip app dependencies rebuild because npmRebuild is set to false");
+        } else if (this.isTwoPackageJsonProjectLayoutUsed) {
             if (platform.nodeName === process.platform) {
                 return util_1.installDependencies(this.appDir, this.electronVersion, arch, "rebuild");
             } else {
@@ -185,7 +189,7 @@ function checkWineVersion(checkPromise) {
         }
         let wineVersion;
         try {
-            wineVersion = (yield checkPromise)[0].toString().trim();
+            wineVersion = (yield checkPromise).trim();
         } catch (e) {
             if (e.code === "ENOENT") {
                 throw new Error(wineError("wine is required"));
@@ -200,5 +204,8 @@ function checkWineVersion(checkPromise) {
             throw new Error(wineError(`wine 1.8+ is required, but your version is ${ wineVersion }`));
         }
     });
+}
+function isEmptyOrSpaces(s) {
+    return s == null || s.trim().length === 0;
 }
 //# sourceMappingURL=packager.js.map
