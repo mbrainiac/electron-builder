@@ -22,9 +22,9 @@
     "test": "node ./test/out/helpers/runTests.js",
     "semantic-release": "semantic-release pre && npm publish && semantic-release post",
     "//": "Update wiki if docs changed. Update only if functionalily are generally available (latest release, not next)",
-    "update-wiki": "git subtree split -b wiki --prefix docs/ && git push wiki wiki:master",
+    "update-wiki": "git subtree split -b wiki --prefix docs/ && git push -f wiki wiki:master",
     "whitespace": "whitespace src/*.ts",
-    "docker-images": "docker build -t electronuserland/electron-builder docker && docker build -t electronuserland/electron-builder:wine docker/wine"
+    "docker-images": "docker/build.sh"
   },
   "repository": {
     "type": "git",
@@ -64,11 +64,11 @@
     "compare-versions": "^2.0.1",
     "debug": "^2.2.0",
     "deep-assign": "^2.0.0",
-    "electron-osx-sign-tf": "0.5.1",
-    "electron-packager-tf": "~7.2.0",
-    "electron-winstaller-fixed": "~2.9.3",
+    "electron-osx-sign-tf": "0.6.0",
+    "electron-packager-tf": "~7.3.0",
+    "electron-winstaller-fixed": "~2.9.6",
     "fs-extra-p": "^1.0.1",
-    "globby": "^4.1.0",
+    "glob": "^7.0.3",
     "hosted-git-info": "^2.1.5",
     "image-size": "^0.5.0",
     "lodash.template": "^4.2.5",
@@ -94,16 +94,18 @@
   "devDependencies": {
     "ava-tf": "^0.15",
     "babel-plugin-array-includes": "^2.0.3",
+    "babel-plugin-transform-es2015-destructuring": "^6.9.0",
     "babel-plugin-transform-es2015-parameters": "^6.9.0",
     "babel-plugin-transform-es2015-spread": "^6.8.0",
     "decompress-zip": "^0.3.0",
+    "diff": "^2.2.3",
     "electron-download": "^2.1.2",
-    "json-parse-helpfulerror": "^1.0.3",
+    "json8": "^0.9.0",
     "path-sort": "^0.1.0",
     "plist": "^1.2.0",
     "pre-git": "^3.8.4",
     "semantic-release": "^6.3.0",
-    "should": "^8.4.0",
+    "should": "^9.0.0",
     "ts-babel": "^0.8.6",
     "tsconfig-glob": "^0.4.3",
     "tslint": "3.10.0-dev.2",
@@ -114,6 +116,7 @@
     "plugins": [
       "transform-es2015-parameters",
       "transform-es2015-spread",
+      "transform-es2015-destructuring",
       "array-includes"
     ]
   },

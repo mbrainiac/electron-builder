@@ -1,4 +1,5 @@
 import { ElectronPackagerOptions } from "electron-packager-tf"
+import { AsarOptions } from "asar"
 
 export interface Metadata {
   readonly repository?: string | RepositoryInfo | null
@@ -92,9 +93,11 @@ export interface BuildMetadata {
 
   /*
    Whether to package the application's source code into an archive, using [Electron's archive format](https://github.com/electron/asar). Defaults to `true`.
-    Reasons why you may want to disable this feature are described in [an application packaging tutorial in Electron's documentation](http://electron.atom.io/docs/latest/tutorial/application-packaging/#limitations-on-node-api/).
+   Reasons why you may want to disable this feature are described in [an application packaging tutorial in Electron's documentation](http://electron.atom.io/docs/latest/tutorial/application-packaging/#limitations-on-node-api/).
+
+   Or you can pass object of any asar options.
    */
-  readonly asar?: boolean
+  readonly asar?: AsarOptions | boolean | null
 
   // deprecated
   readonly iconUrl?: string | null
@@ -151,6 +154,11 @@ export interface BuildMetadata {
    *programmatic API only* The function to be run after pack (but before pack into distributable format and sign). Promise must be returned.
    */
   readonly afterPack?: (context: AfterPackContext) => Promise<any> | null
+
+  /*
+   Whether to rebuild native dependencies (`npm rebuild`) before starting to package the app. Defaults to `true`.
+   */
+  readonly npmRebuild?: boolean
 }
 
 export interface AfterPackContext {
@@ -165,7 +173,7 @@ export interface AfterPackContext {
  */
 export interface OsXBuildOptions extends PlatformSpecificBuildOptions {
   /*
-   The path to icon, which will be shown when mounted (default: `build/icon.icns`).
+   The path to DMG icon, which will be shown when mounted. Defaults to `build/icon.icns`.
    */
   readonly icon?: string | null
 
@@ -187,14 +195,14 @@ export interface OsXBuildOptions extends PlatformSpecificBuildOptions {
   readonly identity?: string | null
 
   /*
-   The path to entitlements file for signing the app. `build/osx.entitlements` will be used if exists (it is a recommended way to set).
+   The path to entitlements file for signing the app. `build/entitlements.osx.plist` will be used if exists (it is a recommended way to set).
    MAS entitlements is specified in the [.build.mas](#MasBuildOptions-entitlements).
    */
   readonly entitlements?: string | null
 
   /*
-   The path to child entitlements which inherit the security settings for signing frameworks and bundles of a distribution. `build/osx.inherit.entitlements` will be used if exists (it is a recommended way to set).
-   Otherwise [default](https://github.com/electron-userland/electron-osx-sign/blob/master/default.darwin.inherit.entitlements).
+   The path to child entitlements which inherit the security settings for signing frameworks and bundles of a distribution. `build/entitlements.osx.inherit.plist` will be used if exists (it is a recommended way to set).
+   Otherwise [default](https://github.com/electron-userland/electron-osx-sign/blob/master/default.entitlements.darwin.inherit.plist).
 
    This option only applies when signing with `entitlements` provided.
    */
@@ -208,14 +216,14 @@ export interface OsXBuildOptions extends PlatformSpecificBuildOptions {
  */
 export interface MasBuildOptions extends OsXBuildOptions {
   /*
-   The path to entitlements file for signing the app. `build/mas.entitlements` will be used if exists (it is a recommended way to set).
-   Otherwise [default](https://github.com/electron-userland/electron-osx-sign/blob/master/default.mas.entitlements).
+   The path to entitlements file for signing the app. `build/entitlements.mas.plist` will be used if exists (it is a recommended way to set).
+   Otherwise [default](https://github.com/electron-userland/electron-osx-sign/blob/master/default.entitlements.mas.plist).
    */
   readonly entitlements?: string | null
 
   /*
-   The path to child entitlements which inherit the security settings for signing frameworks and bundles of a distribution. `build/mas.inherit.entitlements` will be used if exists (it is a recommended way to set).
-   Otherwise [default](https://github.com/electron-userland/electron-osx-sign/blob/master/default.mas.inherit.entitlements).
+   The path to child entitlements which inherit the security settings for signing frameworks and bundles of a distribution. `build/entitlements.mas.inherit.plist` will be used if exists (it is a recommended way to set).
+   Otherwise [default](https://github.com/electron-userland/electron-osx-sign/blob/master/default.entitlements.mas.inherit.plist).
    */
   readonly entitlementsInherit?: string | null
 }
@@ -340,6 +348,8 @@ export interface PlatformSpecificBuildOptions {
   readonly extraFiles?: Array<string> | null
   readonly extraResources?: Array<string> | null
 
+  readonly asar?: AsarOptions | boolean
+
   readonly target?: Array<string> | null
 }
 
@@ -353,6 +363,22 @@ export class Platform {
 
   toString() {
     return this.name
+  }
+
+  toJSON() {
+    return this.name
+  }
+
+  public createTarget(type?: string | null, ...archs: Array<Arch>): Map<Platform, Map<Arch, Array<string>>> {
+    const archToType = new Map()
+    for (let arch of (archs == null || archs.length === 0 ? [archFromString(process.arch)] : archs)) {
+      archToType.set(arch, type == null ? [] : [type])
+    }
+    return new Map([[this, archToType]])
+  }
+
+  public static current(): Platform {
+    return Platform.fromString(process.platform)
   }
 
   public static fromString(name: string): Platform {
@@ -372,6 +398,21 @@ export class Platform {
 
     throw new Error("Unknown platform: " + name)
   }
+}
+
+export enum Arch {
+  ia32, x64
+}
+
+export function archFromString(name: string): Arch {
+  if (name === "x64") {
+    return Arch.x64
+  }
+  if (name === "ia32") {
+    return Arch.ia32
+  }
+
+  throw new Error(`Unsupported arch ${name}`)
 }
 
 export function getProductName(metadata: AppMetadata, devMetadata: DevMetadata) {

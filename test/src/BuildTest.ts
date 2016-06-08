@@ -1,15 +1,41 @@
 import test from "./helpers/avaEx"
-import { assertPack, modifyPackageJson, outDirName } from "./helpers/packTester"
-import { expectedWinContents } from "./helpers/expectedContents"
-import { move, outputFile, outputJson } from "fs-extra-p"
+import { assertPack, modifyPackageJson, platform, getPossiblePlatforms, currentPlatform } from "./helpers/packTester"
+import { move, outputJson } from "fs-extra-p"
 import { Promise as BluebirdPromise } from "bluebird"
 import * as path from "path"
 import { assertThat } from "./helpers/fileAssert"
-import { Platform, PackagerOptions, DIR_TARGET } from "out"
-import pathSorter = require("path-sort")
+import { archFromString, BuildOptions, Platform, Arch, PackagerOptions, DIR_TARGET, createTargets } from "out"
+import { normalizeOptions } from "out/builder"
+import { createYargs } from "out/cliOptions"
 
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("out/awaiter")
+
+test("cli", () => {
+  const yargs = createYargs()
+
+  const base = {
+    publish: <string>undefined,
+  }
+
+  function expected(opt: PackagerOptions): any {
+    return Object.assign(base, opt)
+  }
+
+  function parse(input: string): BuildOptions {
+    return normalizeOptions(yargs.parse(input.split(" ")))
+  }
+
+  assertThat(parse("--osx")).isEqualTo(expected({targets: Platform.OSX.createTarget()}))
+  assertThat(parse("--ia32 --x64")).isEqualTo(expected({targets: Platform.current().createTarget(null, Arch.x64, Arch.ia32)}))
+  assertThat(parse("--linux")).isEqualTo(expected({targets: Platform.LINUX.createTarget()}))
+  assertThat(parse("--win")).isEqualTo(expected({targets: Platform.WINDOWS.createTarget()}))
+  assertThat(parse("-owl")).isEqualTo(expected({targets: createTargets([Platform.OSX, Platform.WINDOWS, Platform.LINUX])}))
+  assertThat(parse("-l tar.gz:ia32")).isEqualTo(expected({targets: Platform.LINUX.createTarget("tar.gz", Arch.ia32)}))
+  assertThat(parse("-l tar.gz:x64")).isEqualTo(expected({targets: Platform.LINUX.createTarget("tar.gz", Arch.x64)}))
+  assertThat(parse("-l tar.gz")).isEqualTo(expected({targets: Platform.LINUX.createTarget("tar.gz", archFromString(process.arch))}))
+  assertThat(parse("-w tar.gz:x64")).isEqualTo(expected({targets: Platform.WINDOWS.createTarget("tar.gz", Arch.x64)}))
+})
 
 test("custom buildResources dir", () => assertPack("test-app-one", allPlatforms(), {
   tempDirCreated: projectDir => BluebirdPromise.all([
@@ -56,7 +82,7 @@ test("name in the build", t => t.throws(assertPack("test-app-one", currentPlatfo
 }), /'name' in the 'build' is forbidden/))
 
 test("empty description", t => t.throws(assertPack("test-app-one", {
-  platform: [Platform.LINUX],
+  targets: Platform.LINUX.createTarget(),
   devMetadata: <any>{
     description: "",
   }
@@ -101,11 +127,10 @@ test("relative index", () => assertPack("test-app", allPlatforms(false), {
   }, true)
 }))
 
-const electronVersion = "0.37.8"
+const electronVersion = "1.2.1"
 
 test.ifNotWindows("electron version from electron-prebuilt dependency", () => assertPack("test-app-one", {
-  platform: [Platform.LINUX],
-  target: ["dir"],
+  targets: Platform.LINUX.createTarget(DIR_TARGET),
 }, {
   tempDirCreated: projectDir => BluebirdPromise.all([
     outputJson(path.join(projectDir, "node_modules", "electron-prebuilt", "package.json"), {
@@ -118,8 +143,7 @@ test.ifNotWindows("electron version from electron-prebuilt dependency", () => as
 }))
 
 test.ifNotWindows("electron version from build", () => assertPack("test-app-one", {
-  platform: [Platform.LINUX],
-  target: [DIR_TARGET],
+  targets: Platform.LINUX.createTarget(DIR_TARGET),
 }, {
   tempDirCreated: projectDir => modifyPackageJson(projectDir, data => {
     data.devDependencies = {}
@@ -132,12 +156,10 @@ test("www as default dir", () => assertPack("test-app", currentPlatform(), {
 }))
 
 test("afterPack", t => {
-  const possiblePlatforms = process.env.CI ? [Platform.fromString(process.platform)] : getPossiblePlatforms()
+  const targets = process.env.CI ? Platform.fromString(process.platform).createTarget(DIR_TARGET) : getPossiblePlatforms()
   let called = 0
   return assertPack("test-app-one", {
-    // linux pack is very fast, so, we use it :)
-    platform: possiblePlatforms,
-    target: [DIR_TARGET],
+    targets: targets,
     devMetadata: {
       build: {
         afterPack: () => {
@@ -148,106 +170,16 @@ test("afterPack", t => {
     }
   }, {
     packed: () => {
-      t.is(called, possiblePlatforms.length)
+      t.is(called, targets.size)
       return Promise.resolve()
     }
   })
 })
 
-test("copy extra content", async () => {
-  for (let platform of getPossiblePlatforms()) {
-    const osName = platform.buildConfigurationKey
-
-    const winDirPrefix = "lib/net45/resources/"
-
-    //noinspection SpellCheckingInspection
-    await assertPack("test-app", {
-      platform: [platform],
-      // to check NuGet package
-      target: platform === Platform.WINDOWS ? null : [DIR_TARGET],
-    }, {
-      tempDirCreated: (projectDir) => {
-        return BluebirdPromise.all([
-          modifyPackageJson(projectDir, data => {
-            data.build.extraResources = [
-              "foo",
-              "bar/hello.txt",
-              "bar/${arch}.txt",
-              "${os}/${arch}.txt",
-            ]
-
-            data.build[osName] = {
-              extraResources: [
-                "platformSpecificR"
-              ],
-              extraFiles: [
-                "platformSpecificF"
-              ],
-            }
-          }),
-          outputFile(path.join(projectDir, "foo/nameWithoutDot"), "nameWithoutDot"),
-          outputFile(path.join(projectDir, "bar/hello.txt"), "data"),
-          outputFile(path.join(projectDir, `bar/${process.arch}.txt`), "data"),
-          outputFile(path.join(projectDir, `${osName}/${process.arch}.txt`), "data"),
-          outputFile(path.join(projectDir, "platformSpecificR"), "platformSpecificR"),
-          outputFile(path.join(projectDir, "ignoreMe.txt"), "ignoreMe"),
-        ])
-      },
-      packed: async (projectDir) => {
-        const base = path.join(projectDir, outDirName, platform.buildConfigurationKey)
-        let resourcesDir = path.join(base, "resources")
-        if (platform === Platform.OSX) {
-          resourcesDir = path.join(base, "TestApp.app", "Contents", "Resources")
-        }
-        else if (platform === Platform.WINDOWS) {
-          resourcesDir = path.join(base + "-unpacked", "resources")
-        }
-        await assertThat(path.join(resourcesDir, "foo")).isDirectory()
-        await assertThat(path.join(resourcesDir, "foo", "nameWithoutDot")).isFile()
-        await assertThat(path.join(resourcesDir, "bar", "hello.txt")).isFile()
-        await assertThat(path.join(resourcesDir, "bar", `${process.arch}.txt`)).isFile()
-        await assertThat(path.join(resourcesDir, osName, `${process.arch}.txt`)).isFile()
-        await assertThat(path.join(resourcesDir, "platformSpecificR")).isFile()
-        await assertThat(path.join(resourcesDir, "ignoreMe.txt")).doesNotExist()
-      },
-      expectedContents: platform === Platform.WINDOWS ? pathSorter(expectedWinContents.concat(
-        winDirPrefix + "bar/hello.txt",
-        winDirPrefix + "bar/x64.txt",
-        winDirPrefix + "foo/nameWithoutDot",
-        winDirPrefix + "platformSpecificR",
-        winDirPrefix + "win/x64.txt"
-      )) : null,
-    })
-  }
-})
-
-test("invalid platform", t => t.throws(assertPack("test-app-one", {
-  platform: [null],
-  target: [DIR_TARGET]
-}), "Unknown platform: null"))
+test.ifWinCi("Build OS X on Windows is not supported", (t: any) => t.throws(assertPack("test-app-one", platform(Platform.OSX)), /Build for OS X is supported only on OS X.+/))
 
 function allPlatforms(dist: boolean = true): PackagerOptions {
   return {
-    platform: getPossiblePlatforms(),
-    target: dist ? null : [DIR_TARGET],
-  }
-}
-
-function currentPlatform(dist: boolean = true): PackagerOptions {
-  return {
-    platform: [Platform.fromString(process.platform)],
-    target: dist ? null : [DIR_TARGET],
-  }
-}
-
-function getPossiblePlatforms(): Array<Platform> {
-  if (process.platform === Platform.OSX.nodeName) {
-    return process.env.CI ? [Platform.OSX, Platform.LINUX] : [Platform.OSX, Platform.LINUX, Platform.WINDOWS]
-  }
-  else if (process.platform === Platform.LINUX.nodeName) {
-    return [Platform.LINUX, Platform.WINDOWS]
-  }
-  else {
-    return [Platform.WINDOWS]
+    targets: getPossiblePlatforms(dist ? null : DIR_TARGET),
   }
 }

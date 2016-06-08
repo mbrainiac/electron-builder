@@ -8,7 +8,9 @@ import { Platform } from "out/metadata"
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("../../../out/awaiter")
 
-const utilSpawn = require("../../../out/util").spawn
+const util = require("../../../out/util")
+const utilSpawn = util.spawn
+const isEmptyOrSpaces = util.isEmptyOrSpaces
 
 const downloadElectron: (options: any) => Promise<any> = BluebirdPromise.promisify(require("electron-download"))
 const packager = require("../../../out/packager")
@@ -17,7 +19,7 @@ const rootDir = path.join(__dirname, "..", "..", "..")
 const testPackageDir = path.join(require("os").tmpdir(), "electron_builder_published")
 const testNodeModules = path.join(testPackageDir, "node_modules")
 
-const electronVersion = "0.37.8"
+const electronVersion = "1.2.1"
 
 async function main() {
   await BluebirdPromise.all([
@@ -36,9 +38,9 @@ async function main() {
 
   // install from cache - all dependencies are already installed before run test
   // https://github.com/npm/npm/issues/2568
-  await exec("npm", ["install", "--cache-min", "999999999", "--production", rootDir])
+  await exec(["install", "--cache-min", "999999999", "--production", rootDir])
   // prune stale packages
-  await exec("npm", ["prune", "--production"])
+  await exec(["prune", "--production"])
   await runTests()
 }
 
@@ -58,7 +60,7 @@ async function deleteOldElectronVersion(): Promise<any> {
     const deletePromises: Array<Promise<any>> = []
     for (let file of (await readdir(cacheDir))) {
       if (file.endsWith(".zip") && !file.includes(electronVersion)) {
-        console.log("Remove old electron " + file)
+        console.log(`Remove old electron ${file}`)
         deletePromises.push(unlink(path.join(cacheDir, file)))
       }
     }
@@ -116,48 +118,75 @@ async function copyDependencies() {
   })
 }
 
+/**
+ * CIRCLE_NODE_INDEX=2 — test nodejs 4 (on Circle).
+ */
 function runTests(): BluebirdPromise<any> {
-  return utilSpawn(path.join(rootDir, "node_modules", ".bin", "ava"), null, {
+  const args: Array<string> = []
+  const testFiles = process.env.TEST_FILES
+
+  const baseDir = path.join("test", "out")
+  const baseForLinuxTests = [path.join(baseDir, "ArtifactPublisherTest.js"), path.join(baseDir, "httpRequestTest.js"), path.join(baseDir, "RepoSlugTest.js")]
+  let skipWin = false
+  if (!isEmptyOrSpaces(testFiles)) {
+    args.push(...testFiles.split(",").map((it: string) => path.join(baseDir, it.trim() + ".js")))
+    if (process.platform === "linux") {
+      // test it only on Linux in any case
+      args.push(...baseForLinuxTests)
+    }
+
+    console.log(`Test files: ${args.join(", ")}`)
+  }
+  else if (!isEmptyOrSpaces(process.env.CIRCLE_NODE_INDEX)) {
+    const circleNodeIndex = parseInt(process.env.CIRCLE_NODE_INDEX, 10)
+    if (circleNodeIndex === 0 || circleNodeIndex === 2) {
+      skipWin = true
+      args.push(path.join(baseDir, "linuxPackagerTest.js"), path.join(baseDir, "BuildTest.js"), path.join(baseDir, "globTest.js"))
+    }
+    else {
+      args.push(path.join(baseDir, "winPackagerTest.js"))
+      args.push(...baseForLinuxTests)
+    }
+    console.log(`Test files for node ${circleNodeIndex}: ${args.join(", ")}`)
+  }
+
+  return utilSpawn(path.join(rootDir, "node_modules", ".bin", "ava"), args, {
     cwd: rootDir,
     env: Object.assign({}, process.env, {
       NODE_PATH: path.join(testNodeModules, "electron-builder"),
+      SKIP_WIN: skipWin,
     }),
     shell: process.platform === "win32",
     stdio: "inherit"
   })
 }
 
-function exec(command: string, args: Array<string>) {
+function exec(args: Array<string>) {
   return new BluebirdPromise((resolve, reject) => {
-    const isPruneCommand = args != null && args.length > 0 && args[0] === "prune"
-    if (command === "npm") {
-      const npmExecPath = process.env.npm_execpath || process.env.NPM_CLI_JS
-      if (npmExecPath != null) {
-        args.unshift(npmExecPath)
-        command = process.env.npm_node_execpath || process.env.NODE_EXE || "node"
-      }
+    let command = "npm"
+    const npmExecPath = process.env.npm_execpath || process.env.NPM_CLI_JS
+    if (npmExecPath != null) {
+      args.unshift(npmExecPath)
+      command = process.env.npm_node_execpath || process.env.NODE_EXE || "node"
     }
 
     const effectiveOptions = {
-      stdio: isPruneCommand ? ["ignore", "ignore", "inherit"] : ["ignore", "inherit", "inherit"],
+      stdio: ["ignore", "ignore", "inherit"],
       cwd: testPackageDir,
     }
-    console.log(`Execute ${command} ${args.join(" ")} (cwd: ${effectiveOptions.cwd})`)
+    // console.log(`Execute ${command} ${args.join(" ")} (cwd: ${effectiveOptions.cwd})`)
     const child = spawn(command, args, effectiveOptions)
     child.on("close", (code: number) => {
       if (code === 0) {
         resolve()
       }
       else {
-        if (command === "npm") {
-          try {
-            console.error(readFileSync(path.join(testPackageDir, "npm-debug.log"), "utf8"))
-          }
-          catch (e) {
-            // ignore
-          }
+        try {
+          console.error(readFileSync(path.join(testPackageDir, "npm-debug.log"), "utf8"))
         }
-
+        catch (e) {
+          // ignore
+        }
         reject(new Error(`${command} ${args.join(" ")} exited with code ${code}`))
       }
     })

@@ -1,16 +1,17 @@
 import { InfoRetriever, ProjectMetadataProvider } from "./repositoryInfo"
-import { AppMetadata, DevMetadata, Platform, PlatformSpecificBuildOptions, getProductName } from "./metadata"
+import { AppMetadata, DevMetadata, Platform, PlatformSpecificBuildOptions, getProductName, Arch } from "./metadata"
 import EventEmitter = NodeJS.EventEmitter
 import { Promise as BluebirdPromise } from "bluebird"
 import * as path from "path"
 import { pack, ElectronPackagerOptions } from "electron-packager-tf"
-import globby = require("globby")
-import { readdir, copy, unlink } from "fs-extra-p"
-import { statOrNull, use, spawn, debug7zArgs, debug } from "./util"
+import { globby } from "./globby"
+import { readdir, copy, unlink, lstat, remove } from "fs-extra-p"
+import { statOrNull, use, spawn, debug7zArgs, debug, warn, log } from "./util"
 import { Packager } from "./packager"
-import deepAssign = require("deep-assign")
-import { listPackage, statFile } from "asar"
+import { listPackage, statFile, AsarFileMetadata, createPackageFromFiles, AsarOptions } from "asar"
 import { path7za } from "7zip-bin"
+import deepAssign = require("deep-assign")
+import { Glob } from "glob"
 
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("./awaiter")
@@ -29,17 +30,10 @@ const extToCompressionDescriptor: { [key: string]: CompressionDescriptor; } = {
 
 export const commonTargets = ["dir", "zip", "7z", "tar.xz", "tar.lz", "tar.gz", "tar.bz2"]
 
-// class Target {
-//   constructor(public platform: Platform, arch?: "ia32" | "x64")
-// }
-//
 export const DIR_TARGET = "dir"
 
 export interface PackagerOptions {
-  target?: Array<string> | null
-
-  platform?: Array<Platform> | null
-  arch?: string | null
+  targets?: Map<Platform, Map<Arch, string[]>>
 
   projectDir?: string | null
 
@@ -57,8 +51,6 @@ export interface PackagerOptions {
    * Development `package.json` will be still read, but options specified in this object will override.
    */
   readonly devMetadata?: DevMetadata
-
-  readonly npmRebuild?: boolean
 }
 
 export interface BuildInfo extends ProjectMetadataProvider {
@@ -73,6 +65,8 @@ export interface BuildInfo extends ProjectMetadataProvider {
 
   repositoryInfo: InfoRetriever | n
   eventEmitter: EventEmitter
+
+  isTwoPackageJsonProjectLayoutUsed: boolean
 }
 
 export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> implements ProjectMetadataProvider {
@@ -88,8 +82,6 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
 
   readonly appName: string
 
-  readonly targets: Array<string>
-
   readonly resourceList: Promise<Array<string>>
 
   public abstract get platform(): Platform
@@ -104,22 +96,6 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
     this.customBuildOptions = (<any>info.devMetadata.build)[this.platform.buildConfigurationKey] || Object.create(null)
     this.appName = getProductName(this.metadata, this.devMetadata)
 
-    let targets = normalizeTargets(this.customBuildOptions.target)
-    const cliTargets = normalizeTargets(this.options.target)
-    if (cliTargets != null) {
-      targets = cliTargets
-    }
-
-    if (targets != null) {
-      const supportedTargets = this.supportedTargets.concat(commonTargets)
-      for (let target of targets) {
-        if (target !== "default" && !supportedTargets.includes(target)) {
-          throw new Error(`Unknown target: ${target}`)
-        }
-      }
-    }
-    this.targets = targets == null ? ["default"] : targets
-
     this.resourceList = readdir(this.buildResourcesDir)
       .catch(e => {
         if (e.code !== "ENOENT") {
@@ -129,8 +105,41 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
       })
   }
 
+  protected getCscPassword(): string {
+    const password = this.options.cscKeyPassword
+    if (password == null) {
+      log("CSC_KEY_PASSWORD is not defined, empty password will be used")
+      return ""
+    }
+    else {
+      return password.trim()
+    }
+  }
+
+  public computeEffectiveTargets(rawList: Array<string>): Array<string> {
+    let targets = normalizeTargets(rawList.length === 0 ? this.customBuildOptions.target : rawList)
+    if (targets != null) {
+      const supportedTargets = this.supportedTargets.concat(commonTargets)
+      for (let target of targets) {
+        if (target !== "default" && !supportedTargets.includes(target)) {
+          throw new Error(`Unknown target: ${target}`)
+        }
+      }
+    }
+    return targets == null ? ["default"] : targets
+  }
+
   protected hasOnlyDirTarget(): boolean {
-    return this.targets.length === 1 && this.targets[0] === "dir"
+    for (let targets of this.options.targets!.get(this.platform)!.values()) {
+      for (let t of targets) {
+        if (t !== "dir") {
+          return false
+        }
+      }
+    }
+
+    const targets = normalizeTargets(this.customBuildOptions.target)
+    return targets != null && targets.length === 1 && targets[0] === "dir"
   }
 
   protected get relativeBuildResourcesDirname() {
@@ -139,8 +148,8 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
 
   protected abstract get supportedTargets(): Array<string>
 
-  protected computeAppOutDir(outDir: string, arch: string): string {
-    return path.join(outDir, `${this.platform.buildConfigurationKey}${arch === "x64" ? "" : `-${arch}`}`)
+  protected computeAppOutDir(outDir: string, arch: Arch): string {
+    return path.join(outDir, `${this.platform.buildConfigurationKey}${arch === Arch.x64 ? "" : `-${Arch[arch]}`}`)
   }
 
   protected dispatchArtifactCreated(file: string, artifactName?: string) {
@@ -151,14 +160,33 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
     })
   }
 
-  abstract pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any>
+  abstract pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any>
 
-  protected async doPack(options: ElectronPackagerOptions, outDir: string, appOutDir: string, arch: string, customBuildOptions: DC) {
-    await this.packApp(options, appOutDir)
+  protected async doPack(options: ElectronPackagerOptions, outDir: string, appOutDir: string, arch: Arch, customBuildOptions: DC) {
+    const asar = options.asar
+    options.asar = false
+    await pack(options)
+    options.asar = asar
+
+    const asarOptions = this.computeAsarOptions(customBuildOptions)
+    if (asarOptions != null) {
+      await this.createAsarArchive(appOutDir, asarOptions)
+    }
+
     await this.copyExtraFiles(appOutDir, arch, customBuildOptions)
+
+    const afterPack = this.devMetadata.build.afterPack
+    if (afterPack != null) {
+      await afterPack({
+        appOutDir: appOutDir,
+        options: options,
+      })
+    }
+
+    await this.sanityCheckPackage(appOutDir, asarOptions != null)
   }
 
-  protected computePackOptions(outDir: string, appOutDir: string, arch: string): ElectronPackagerOptions {
+  protected computePackOptions(outDir: string, appOutDir: string, arch: Arch): ElectronPackagerOptions {
     const version = this.metadata.version
     let buildVersion = version
     const buildNumber = this.computeBuildNumber()
@@ -166,16 +194,16 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
       buildVersion += "." + buildNumber
     }
 
-    const options = deepAssign({
+    //noinspection JSUnusedGlobalSymbols
+    const options: any = deepAssign({
       dir: this.info.appDir,
       out: outDir,
       name: this.appName,
       productName: this.appName,
       platform: this.platform.nodeName,
-      arch: arch,
+      arch: Arch[arch],
       version: this.info.electronVersion,
       icon: path.join(this.buildResourcesDir, "icon"),
-      asar: true,
       overwrite: true,
       "app-version": version,
       "app-copyright": `Copyright © ${new Date().getFullYear()} ${this.metadata.author.name || this.appName}`,
@@ -190,6 +218,14 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
       }
     }, this.devMetadata.build)
 
+    if (!this.info.isTwoPackageJsonProjectLayoutUsed && typeof options.ignore !== "function") {
+      const defaultIgnores = ["/node_modules/electron-builder($|/)", "^/" + path.relative(this.projectDir, this.buildResourcesDir) + "($|/)"]
+      if (options.ignore != null && !Array.isArray(options.ignore)) {
+        options.ignore = [options.ignore]
+      }
+      options.ignore = options.ignore == null ? defaultIgnores : options.ignore.concat(defaultIgnores)
+    }
+
     delete options.osx
     delete options.win
     delete options.linux
@@ -198,45 +234,97 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
     return options
   }
 
-  protected async packApp(options: ElectronPackagerOptions, appOutDir: string): Promise<any> {
-    await pack(options)
+  private getExtraResources(isResources: boolean, arch: Arch, customBuildOptions: DC): Promise<Set<string>> {
+    let patterns: Array<string> | n = (<any>this.devMetadata.build)[isResources ? "extraResources" : "extraFiles"]
+    const platformSpecificPatterns = isResources ? customBuildOptions.extraResources : customBuildOptions.extraFiles
+    if (platformSpecificPatterns != null) {
+      patterns = patterns == null ? platformSpecificPatterns : patterns.concat(platformSpecificPatterns)
+    }
+    return patterns == null ? BluebirdPromise.resolve(new Set()) : globby(this.expandPatterns(patterns, arch), {cwd: this.projectDir});
+  }
 
-    const afterPack = this.devMetadata.build.afterPack
-    if (afterPack != null) {
-      await afterPack({
-        appOutDir: appOutDir,
-        options: options,
+  private computeAsarOptions(customBuildOptions: DC): AsarOptions | null {
+    let result = this.devMetadata.build.asar
+    let platformSpecific = customBuildOptions.asar
+    if (platformSpecific != null) {
+      result = platformSpecific
+    }
+
+    if (result === false) {
+      return null
+    }
+
+    const buildMetadata = <ElectronPackagerOptions>this.devMetadata.build
+    if (buildMetadata["asar-unpack"] != null) {
+      warn("asar-unpack is deprecated, please set as asar.unpack")
+    }
+    if (buildMetadata["asar-unpack-dir"] != null) {
+      warn("asar-unpack-dir is deprecated, please set as asar.unpackDir")
+    }
+
+    if (result == null || result === true) {
+      return {
+        unpack: buildMetadata["asar-unpack"],
+        unpackDir: buildMetadata["asar-unpack-dir"]
+      }
+    }
+    else {
+      return result
+    }
+  }
+
+  private async createAsarArchive(appOutDir: string, options: AsarOptions): Promise<any> {
+    const src = path.join(this.getResourcesDir(appOutDir), "app")
+
+    let glob: Glob | null = null
+    const files = (await new BluebirdPromise<Array<string>>((resolve, reject) => {
+      glob = new Glob("**/*", {
+        cwd: src,
+        // dot: true as in the asar by default
+        dot: true,
+        ignore: "**/.DS_Store",
+      }, (error, matches) => {
+        if (error == null) {
+          resolve(matches)
+        }
+        else {
+          reject(error)
+        }
       })
+    })).map(it => path.join(src, it))
+
+    const stats = await BluebirdPromise.map(files, it => {
+      // const stat = glob!.statCache[it]
+      // return stat == null ? lstat(it) : <any>stat
+      // todo check is it safe to reuse glob stat
+      return lstat(it)
+    })
+
+    const metadata: { [key: string]: AsarFileMetadata; } = {}
+    for (let i = 0, n = files.length; i < n; i++) {
+      const stat = stats[i]
+      metadata[files[i]] = {
+        type: stat.isFile() ? "file" : (stat.isDirectory() ? "directory" : "link"),
+        stat: stat,
+      }
     }
 
-    await this.sanityCheckPackage(appOutDir, <boolean>options.asar)
+    await BluebirdPromise.promisify(createPackageFromFiles)(src, path.join(this.getResourcesDir(appOutDir), "app.asar"), files, metadata, options)
+    await remove(src)
   }
 
-  private getExtraResources(isResources: boolean, arch: string, customBuildOptions: DC): Promise<Array<string>> {
-    const buildMetadata: any = this.devMetadata.build
-    let extra: Array<string> | n = buildMetadata == null ? null : buildMetadata[isResources ? "extraResources" : "extraFiles"]
-
-    const platformSpecificExtra = isResources ? customBuildOptions.extraResources : customBuildOptions.extraFiles
-    if (platformSpecificExtra != null) {
-      extra = extra == null ? platformSpecificExtra : extra.concat(platformSpecificExtra)
-    }
-
-    if (extra == null) {
-      return BluebirdPromise.resolve([])
-    }
-
-    const expandedPatterns = extra.map(it => it
-      .replace(/\$\{arch}/g, arch)
+  private expandPatterns(list: Array<string>, arch: Arch): Array<string> {
+    return list.map(it => it
+      .replace(/\$\{arch}/g, Arch[arch])
       .replace(/\$\{os}/g, this.platform.buildConfigurationKey))
-    return globby(expandedPatterns, {cwd: this.projectDir})
   }
 
-  protected async copyExtraFiles(appOutDir: string, arch: string, customBuildOptions: DC): Promise<any> {
+  protected async copyExtraFiles(appOutDir: string, arch: Arch, customBuildOptions: DC): Promise<any> {
     await this.doCopyExtraFiles(true, appOutDir, arch, customBuildOptions)
     await this.doCopyExtraFiles(false, appOutDir, arch, customBuildOptions)
   }
 
-  private async doCopyExtraFiles(isResources: boolean, appOutDir: string, arch: string, customBuildOptions: DC): Promise<Array<string>> {
+  private async doCopyExtraFiles(isResources: boolean, appOutDir: string, arch: Arch, customBuildOptions: DC): Promise<Array<string>> {
     const base = isResources ? this.getResourcesDir(appOutDir) : this.platform === Platform.OSX ? path.join(appOutDir, `${this.appName}.app`, "Contents") : appOutDir
     return await BluebirdPromise.map(await this.getExtraResources(isResources, arch, customBuildOptions), it => copy(path.join(this.projectDir, it), path.join(base, it)))
   }
@@ -320,9 +408,7 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
     const compression = this.devMetadata.build.compression
     const storeOnly = compression === "store"
 
-    const fileToArchive = this.platform === Platform.OSX ? path.join(appOutDir, `${this.appName}.app`) : appOutDir
-    const baseDir = path.dirname(fileToArchive)
-    const basename = path.basename(fileToArchive);
+    const dirToArchive = this.platform === Platform.OSX ? path.join(appOutDir, `${this.appName}.app`) : appOutDir
     if (format.startsWith("tar.")) {
       // we don't use 7z here - develar: I spent a lot of time making pipe working - but it works on OS X and often hangs on Linux (even if use pipe-io lib)
       // and in any case it is better to use system tools (in the light of docker - it is not problem for user because we provide complete docker image).
@@ -333,8 +419,8 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
         tarEnv[info.env] = storeOnly ? info.minLevel : info.maxLevel
       }
 
-      await spawn(process.platform === "darwin" ? "/usr/local/opt/gnu-tar/libexec/gnubin/tar" : "tar", [info.flag, "-cf", outFile, "-C", fileToArchive + '/..', basename], {
-        cwd: baseDir,
+      await spawn(process.platform === "darwin" || process.platform === "freebsd" ? "gtar" : "tar", [info.flag, "--transform", `s,^\.,${path.basename(outFile, "." + format)},`, "-cf", outFile, "."], {
+        cwd: dirToArchive,
         stdio: ["ignore", debug.enabled ? "inherit" : "ignore", "inherit"],
         env: tarEnv
       })
@@ -373,17 +459,17 @@ export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> 
       args.push("-mm=" + (storeOnly ? "Copy" : "Deflate"))
     }
 
-    args.push(outFile, fileToArchive)
+    args.push(outFile, dirToArchive)
 
     await spawn(path7za, args, {
-      cwd: baseDir,
+      cwd: path.dirname(dirToArchive),
       stdio: ["ignore", debug.enabled ? "inherit" : "ignore", "inherit"],
     })
   }
 }
 
-export function archSuffix(arch: string) {
-  return arch === "x64" ? "" : `-${arch}`
+export function getArchSuffix(arch: Arch): string {
+  return arch === Arch.x64 ? "" : `-${Arch[arch]}`
 }
 
 export interface ArtifactCreated {

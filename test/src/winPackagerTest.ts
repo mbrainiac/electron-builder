@@ -1,27 +1,30 @@
-import { Platform } from "out"
+import { Platform, Arch, BuildInfo } from "out"
 import test from "./helpers/avaEx"
 import { assertPack, platform, modifyPackageJson, signed } from "./helpers/packTester"
 import { move, outputFile } from "fs-extra-p"
 import * as path from "path"
 import { WinPackager, computeDistOut } from "out/winPackager"
-import { BuildInfo } from "out/platformPackager"
 import { Promise as BluebirdPromise } from "bluebird"
-import * as assertThat from "should/as-function"
 import { ElectronPackagerOptions } from "electron-packager-tf"
+import { assertThat } from "./helpers/fileAssert"
+import { SignOptions } from "signcode-tf"
 
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("out/awaiter")
 
-test.ifNotCiOsx("win", () => assertPack("test-app-one", signed({
-    platform: [Platform.WINDOWS],
-    arch: "x64",
+test.ifDevOrWinCi("win", () => assertPack("test-app-one", signed({
+    targets: Platform.WINDOWS.createTarget(),
   })
 ))
 
+// test.ifNotCiOsx("win 32", () => assertPack("test-app-one", signed({
+//     targets: Platform.WINDOWS.createTarget(null, Arch.ia32),
+//   })
+// ))
+
 // very slow
 test.ifWinCi("delta", () => assertPack("test-app-one", {
-    platform: [Platform.WINDOWS],
-    arch: "ia32",
+    targets: Platform.WINDOWS.createTarget(null, Arch.ia32),
     devMetadata: {
       build: {
         win: {
@@ -38,7 +41,7 @@ test.ifDevOrWinCi("beta version", () => {
   }
 
   return assertPack("test-app-one", {
-    platform: [Platform.WINDOWS],
+    targets: Platform.WINDOWS.createTarget(),
     devMetadata: metadata
   }, {
     expectedArtifacts: [
@@ -59,22 +62,20 @@ test.ifNotCiOsx("msi as string", t => t.throws(assertPack("test-app-one", platfo
   }), `msi expected to be boolean value, but string '"false"' was specified`)
 )
 
-test("detect install-spinner", () => {
+test("detect install-spinner, certificateFile/password", () => {
   let platformPackager: CheckingWinPackager = null
   let loadingGifPath: string = null
 
-  // todo all PackagerOptions should be optional otherwise it is not possible to pass only several to override dev package.json
-  const devMetadata: any = {
-    build: {
-      win: {
-        certificatePassword: "pass",
-      }
-    }
-  }
   return assertPack("test-app-one", {
-    platform: [Platform.WINDOWS],
+    targets: Platform.WINDOWS.createTarget(),
     platformPackagerFactory: (packager, platform, cleanupTasks) => platformPackager = new CheckingWinPackager(packager, cleanupTasks),
-    devMetadata: devMetadata
+    devMetadata: {
+        build: {
+          win: {
+            certificatePassword: "pass",
+          }
+        }
+      }
   }, {
     tempDirCreated: it => {
       loadingGifPath = path.join(it, "build", "install-spinner.gif")
@@ -88,8 +89,9 @@ test("detect install-spinner", () => {
         })])
     },
     packed: () => {
-      assertThat(platformPackager.effectiveDistOptions.loadingGif).equal(loadingGifPath)
-      assertThat(platformPackager.effectiveDistOptions.certificateFile).equal("secretFile")
+      assertThat(platformPackager.effectiveDistOptions.loadingGif).isEqualTo(loadingGifPath)
+      assertThat(platformPackager.signOptions.cert).isEqualTo("secretFile")
+      assertThat(platformPackager.signOptions.password).isEqualTo("pass")
       return BluebirdPromise.resolve(null)
     },
   })
@@ -105,20 +107,28 @@ test.ifNotCiOsx("icon not an image", (t: any) => t.throws(assertPack("test-app-o
 
 class CheckingWinPackager extends WinPackager {
   effectiveDistOptions: any
+  signOptions: SignOptions | null
 
   constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>) {
     super(info, cleanupTasks)
   }
 
-  async pack(outDir: string, arch: string): Promise<any> {
+  async pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any> {
     // skip pack
     const installerOutDir = computeDistOut(outDir, arch)
     const appOutDir = this.computeAppOutDir(outDir, arch)
     const packOptions = this.computePackOptions(outDir, appOutDir, arch)
     this.effectiveDistOptions = await this.computeEffectiveDistOptions(appOutDir, installerOutDir, packOptions, "Foo.exe")
+
+    await this.sign(appOutDir)
   }
 
-  async packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: string, packOptions: ElectronPackagerOptions): Promise<any> {
+  async packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: Arch, packOptions: ElectronPackagerOptions): Promise<any> {
     // skip
+  }
+
+  protected doSign(opts: SignOptions): Promise<any> {
+    this.signOptions = opts
+    return BluebirdPromise.resolve(null)
   }
 }

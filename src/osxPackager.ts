@@ -1,11 +1,11 @@
 import { PlatformPackager, BuildInfo } from "./platformPackager"
-import { Platform, OsXBuildOptions, MasBuildOptions } from "./metadata"
+import { Platform, OsXBuildOptions, MasBuildOptions, Arch } from "./metadata"
 import * as path from "path"
 import { Promise as BluebirdPromise } from "bluebird"
-import { log, debug, warn } from "./util"
-import { createKeychain, deleteKeychain, CodeSigningInfo, generateKeychainName, findIdentity } from "./codeSign"
+import { log, debug, warn, isEmptyOrSpaces } from "./util"
+import { createKeychain, deleteKeychain, CodeSigningInfo, generateKeychainName, findIdentity, appleCertificatePrefixes, CertType } from "./codeSign"
 import deepAssign = require("deep-assign")
-import { sign, flat, BaseSignOptions, SignOptions, FlatOptions } from "electron-osx-sign-tf"
+import { signAsync, flatAsync, BaseSignOptions, SignOptions, FlatOptions } from "electron-osx-sign-tf"
 
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("./awaiter")
@@ -20,13 +20,9 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
       this.codeSigningInfo = BluebirdPromise.resolve(null)
     }
     else {
-      if (this.options.cscKeyPassword == null) {
-        throw new Error("cscLink is set, but cscKeyPassword not")
-      }
-
       const keychainName = generateKeychainName()
       cleanupTasks.push(() => deleteKeychain(keychainName))
-      this.codeSigningInfo = createKeychain(keychainName, this.options.cscLink, this.options.cscKeyPassword, this.options.cscInstallerLink, this.options.cscInstallerKeyPassword)
+      this.codeSigningInfo = createKeychain(keychainName, this.options.cscLink, this.getCscPassword(), this.options.cscInstallerLink, this.options.cscInstallerKeyPassword)
     }
   }
 
@@ -38,19 +34,19 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
     return ["dmg", "mas"]
   }
 
-  async pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any> {
+  async pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any> {
     const packOptions = this.computePackOptions(outDir, this.computeAppOutDir(outDir, arch), arch)
     let nonMasPromise: Promise<any> | null = null
-    if (this.targets.length > 1 || this.targets[0] !== "mas") {
+    if (targets.length > 1 || targets[0] !== "mas") {
       const appOutDir = this.computeAppOutDir(outDir, arch)
       nonMasPromise = this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions)
         .then(() => this.sign(appOutDir, null))
         .then(() => {
-          postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch))
+          postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, targets))
         })
     }
 
-    if (this.targets.includes("mas")) {
+    if (targets.includes("mas")) {
       // osx-sign - disable warning
       const appOutDir = path.join(outDir, "mas")
       const masBuildOptions = deepAssign({}, this.customBuildOptions, (<any>this.devMetadata.build)["mas"])
@@ -63,17 +59,16 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
     }
   }
 
-  private static async findIdentity(certType: string, name?: string | null): Promise<string | null> {
+  private static async findIdentity(certType: CertType, name?: string | null): Promise<string | null> {
     let identity = process.env.CSC_NAME || name
-    if (identity == null || identity.trim().length === 0) {
+    if (isEmptyOrSpaces(identity)) {
       return await findIdentity(certType)
     }
     else {
       identity = identity.trim()
-      checkPrefix(identity, "Developer ID Application:")
-      checkPrefix(identity, "3rd Party Mac Developer Application:")
-      checkPrefix(identity, "Developer ID Installer:")
-      checkPrefix(identity, "3rd Party Mac Developer Installer:")
+      for (let prefix of appleCertificatePrefixes) {
+        checkPrefix(identity, prefix)
+      }
       const result = await findIdentity(certType, identity)
       if (result == null) {
         throw new Error(`Identity name "${identity}" is specified, but no valid identity with this name in the keychain`)
@@ -134,6 +129,7 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
       app: path.join(appOutDir, `${this.appName}.app`),
       platform: masOptions == null ? "darwin" : "mas",
       keychain: <any>codeSigningInfo.keychainName,
+      version: this.info.electronVersion
     }
 
     const signOptions = Object.assign({
@@ -147,7 +143,7 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
       signOptions.entitlements = customSignOptions.entitlements
     }
     else {
-      const p = `${masOptions == null ? "osx" : "mas"}.entitlements`
+      const p = `entitlements.${masOptions == null ? "osx" : "mas"}.plist`
       if (resourceList.includes(p)) {
         signOptions.entitlements = path.join(this.buildResourcesDir, p)
       }
@@ -157,7 +153,7 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
       signOptions["entitlements-inherit"] = customSignOptions.entitlementsInherit
     }
     else {
-      const p = `${masOptions == null ? "osx" : "mas"}.inherit.entitlements`
+      const p = `entitlements.${masOptions == null ? "osx" : "mas"}.inherit.plist`
       if (resourceList.includes(p)) {
         signOptions["entitlements-inherit"] = path.join(this.buildResourcesDir, p)
       }
@@ -176,11 +172,11 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
   }
 
   protected async doSign(opts: SignOptions): Promise<any> {
-    return BluebirdPromise.promisify(sign)(opts)
+    return signAsync(opts)
   }
 
   protected async doFlat(opts: FlatOptions): Promise<any> {
-    return BluebirdPromise.promisify(flat)(opts)
+    return flatAsync(opts)
   }
 
   protected async computeEffectiveDistOptions(appOutDir: string): Promise<appdmg.Specification> {
@@ -219,9 +215,9 @@ export default class OsXPackager extends PlatformPackager<OsXBuildOptions> {
     return specification
   }
 
-  packageInDistributableFormat(outDir: string, appOutDir: string, arch: string): Promise<any> {
+  protected packageInDistributableFormat(outDir: string, appOutDir: string, targets: Array<string>): Promise<any> {
     const promises: Array<Promise<any>> = []
-    for (let target of this.targets) {
+    for (let target of targets) {
       if (target === "dmg" || target === "default") {
         promises.push(this.createDmg(appOutDir))
       }

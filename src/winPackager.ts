@@ -1,33 +1,49 @@
 import { downloadCertificate } from "./codeSign"
 import { Promise as BluebirdPromise } from "bluebird"
-import { PlatformPackager, BuildInfo, smarten, archSuffix } from "./platformPackager"
-import { Platform, WinBuildOptions } from "./metadata"
+import { PlatformPackager, BuildInfo, smarten, getArchSuffix } from "./platformPackager"
+import { Platform, WinBuildOptions, Arch } from "./metadata"
 import * as path from "path"
 import { log, warn } from "./util"
 import { deleteFile, emptyDir, open, close, read } from "fs-extra-p"
-import { sign } from "signcode-tf"
+import { sign, SignOptions } from "signcode-tf"
 import { ElectronPackagerOptions } from "electron-packager-tf"
 
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("./awaiter")
 
-export class WinPackager extends PlatformPackager<WinBuildOptions> {
-  certFilePromise: Promise<string | null>
+interface FileCodeSigningInfo {
+  readonly file: string
+  readonly password?: string | null
+}
 
-  readonly iconPath: Promise<string>
+export class WinPackager extends PlatformPackager<WinBuildOptions> {
+  private readonly cscInfo: Promise<FileCodeSigningInfo | null>
+
+  private readonly iconPath: Promise<string>
 
   constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>) {
     super(info)
 
-    if (this.options.cscLink != null && this.options.cscKeyPassword != null) {
-      this.certFilePromise = downloadCertificate(this.options.cscLink)
+    const certificateFile = this.customBuildOptions.certificateFile
+    if (certificateFile != null) {
+      const certificatePassword = this.customBuildOptions.certificatePassword || this.getCscPassword()
+      this.cscInfo = BluebirdPromise.resolve({
+        file: certificateFile,
+        password: certificatePassword == null ? null : certificatePassword.trim(),
+      })
+    }
+    else if (this.options.cscLink != null) {
+      this.cscInfo = downloadCertificate(this.options.cscLink)
         .then(path => {
           cleanupTasks.push(() => deleteFile(path, true))
-          return path
+          return {
+            file: path,
+            password: this.getCscPassword(),
+          }
         })
     }
     else {
-      this.certFilePromise = BluebirdPromise.resolve(null)
+      this.cscInfo = BluebirdPromise.resolve(null)
     }
 
     this.iconPath = this.getValidIconPath()
@@ -47,8 +63,8 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     return iconPath
   }
 
-  async pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any> {
-    if (arch === "ia32") {
+  async pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any> {
+    if (arch === Arch.ia32) {
       warn("For windows consider only distributing 64-bit, see https://github.com/electron-userland/electron-builder/issues/359#issuecomment-214851130")
     }
 
@@ -58,7 +74,7 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     const appOutDir = this.computeAppOutDir(outDir, arch)
     const packOptions = this.computePackOptions(outDir, appOutDir, arch)
 
-    if (!this.targets.includes("default")) {
+    if (!targets.includes("default")) {
       await this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions)
       return
     }
@@ -72,26 +88,34 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     postAsyncTasks.push(this.packageInDistributableFormat(appOutDir, installerOut, arch, packOptions))
   }
 
-  protected computeAppOutDir(outDir: string, arch: string): string {
-    return path.join(outDir, `win${arch === "x64" ? "" : `-${arch}`}-unpacked`)
+  protected computeAppOutDir(outDir: string, arch: Arch): string {
+    return path.join(outDir, `win${getArchSuffix(arch)}-unpacked`)
   }
 
-  protected async packApp(options: any, appOutDir: string) {
-    await super.packApp(options, appOutDir)
+  protected async doPack(options: ElectronPackagerOptions, outDir: string, appOutDir: string, arch: Arch, customBuildOptions: WinBuildOptions) {
+    await super.doPack(options, outDir, appOutDir, arch, customBuildOptions)
+    await this.sign(appOutDir)
+  }
 
-    if (process.platform !== "linux" && this.options.cscLink != null && this.options.cscKeyPassword != null) {
-      const filename = this.appName + ".exe"
-      log(`Signing ${filename}`)
-      await BluebirdPromise.promisify(sign)({
+  protected async sign(appOutDir: string) {
+    const cscInfo = await this.cscInfo
+    if (cscInfo != null) {
+      const filename = `${this.appName}.exe`
+      log(`Signing ${filename} (certificate file "${cscInfo.file}")`)
+      await this.doSign({
         path: path.join(appOutDir, filename),
-        cert: (await this.certFilePromise)!,
-        password: this.options.cscKeyPassword,
+        cert: cscInfo.file,
+        password: cscInfo.password!,
         name: this.appName,
         site: await this.computePackageUrl(),
         overwrite: true,
         hash: this.customBuildOptions.signingHashAlgorithms,
       })
     }
+  }
+
+  protected async doSign(opts: SignOptions): Promise<any> {
+    return BluebirdPromise.promisify(sign)(opts)
   }
 
   protected async computeEffectiveDistOptions(appOutDir: string, installerOutDir: string, packOptions: ElectronPackagerOptions, setupExeName: string): Promise<WinBuildOptions> {
@@ -119,6 +143,7 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     }
     rceditOptions["version-string"]!.LegalCopyright = packOptions["app-copyright"]
 
+    const cscInfo = await this.cscInfo
     const options: any = Object.assign({
       name: this.metadata.name,
       productName: this.appName,
@@ -132,13 +157,14 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
       authors: this.metadata.author.name,
       iconUrl: iconUrl,
       setupIcon: await this.iconPath,
-      certificateFile: await this.certFilePromise,
-      certificatePassword: this.options.cscKeyPassword,
+      certificateFile: cscInfo == null ? null : cscInfo.file,
+      certificatePassword: cscInfo == null ? null : cscInfo.password,
       fixUpPaths: false,
       skipUpdateIcon: true,
       usePackageJson: false,
       extraMetadataSpecs: projectUrl == null ? null : `\n    <projectUrl>${projectUrl}</projectUrl>`,
       copyright: packOptions["app-copyright"],
+      packageCompressionLevel: this.devMetadata.build.compression === "store" ? 0 : 9,
       sign: {
         name: this.appName,
         site: projectUrl,
@@ -158,10 +184,10 @@ export class WinPackager extends PlatformPackager<WinBuildOptions> {
     return options
   }
 
-  protected async packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: string, packOptions: ElectronPackagerOptions): Promise<any> {
+  protected async packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: Arch, packOptions: ElectronPackagerOptions): Promise<any> {
     const winstaller = require("electron-winstaller-fixed")
     const version = this.metadata.version
-    const archSuffix = arch === "x64" ? "" : ("-" + arch)
+    const archSuffix = getArchSuffix(arch)
     const setupExeName = `${this.appName} Setup ${version}${archSuffix}.exe`
 
     const distOptions = await this.computeEffectiveDistOptions(appOutDir, installerOutDir, packOptions, setupExeName)
@@ -227,8 +253,8 @@ function isIco(buffer: Buffer): boolean {
   return buffer.readUInt16LE(0) === 0 && buffer.readUInt16LE(2) === 1
 }
 
-export function computeDistOut(outDir: string, arch: string): string {
-  return path.join(outDir, `win${archSuffix(arch)}`)
+export function computeDistOut(outDir: string, arch: Arch): string {
+  return path.join(outDir, `win${getArchSuffix(arch)}`)
 }
 
 function checkConflictingOptions(options: any) {
