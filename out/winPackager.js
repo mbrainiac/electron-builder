@@ -13,13 +13,23 @@ const __awaiter = require("./awaiter");
 class WinPackager extends platformPackager_1.PlatformPackager {
     constructor(info, cleanupTasks) {
         super(info);
-        if (this.options.cscLink != null && this.options.cscKeyPassword != null) {
-            this.certFilePromise = codeSign_1.downloadCertificate(this.options.cscLink).then(path => {
+        const certificateFile = this.customBuildOptions.certificateFile;
+        if (certificateFile != null) {
+            const certificatePassword = this.customBuildOptions.certificatePassword || this.getCscPassword();
+            this.cscInfo = bluebird_1.Promise.resolve({
+                file: certificateFile,
+                password: certificatePassword == null ? null : certificatePassword.trim()
+            });
+        } else if (this.options.cscLink != null) {
+            this.cscInfo = codeSign_1.downloadCertificate(this.options.cscLink).then(path => {
                 cleanupTasks.push(() => fs_extra_p_1.deleteFile(path, true));
-                return path;
+                return {
+                    file: path,
+                    password: this.getCscPassword()
+                };
             });
         } else {
-            this.certFilePromise = bluebird_1.Promise.resolve(null);
+            this.cscInfo = bluebird_1.Promise.resolve(null);
         }
         this.iconPath = this.getValidIconPath();
     }
@@ -36,16 +46,16 @@ class WinPackager extends platformPackager_1.PlatformPackager {
             return iconPath;
         });
     }
-    pack(outDir, arch, postAsyncTasks) {
+    pack(outDir, arch, targets, postAsyncTasks) {
         return __awaiter(this, void 0, void 0, function* () {
-            if (arch === "ia32") {
+            if (arch === metadata_1.Arch.ia32) {
                 util_1.warn("For windows consider only distributing 64-bit, see https://github.com/electron-userland/electron-builder/issues/359#issuecomment-214851130");
             }
             // we must check icon before pack because electron-packager uses icon and it leads to cryptic error message "spawn wine ENOENT"
             yield this.iconPath;
             const appOutDir = this.computeAppOutDir(outDir, arch);
             const packOptions = this.computePackOptions(outDir, appOutDir, arch);
-            if (!(this.targets.indexOf("default") !== -1)) {
+            if (!(targets.indexOf("default") !== -1)) {
                 yield this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions);
                 return;
             }
@@ -55,25 +65,36 @@ class WinPackager extends platformPackager_1.PlatformPackager {
         });
     }
     computeAppOutDir(outDir, arch) {
-        return path.join(outDir, `win${ arch === "x64" ? "" : `-${ arch }` }-unpacked`);
+        return path.join(outDir, `win${ platformPackager_1.getArchSuffix(arch) }-unpacked`);
     }
-    packApp(options, appOutDir) {
+    doPack(options, outDir, appOutDir, arch, customBuildOptions) {
         const _super = name => super[name];
         return __awaiter(this, void 0, void 0, function* () {
-            yield _super("packApp").call(this, options, appOutDir);
-            if (process.platform !== "linux" && this.options.cscLink != null && this.options.cscKeyPassword != null) {
-                const filename = this.appName + ".exe";
-                util_1.log(`Signing ${ filename }`);
-                yield bluebird_1.Promise.promisify(signcode_tf_1.sign)({
+            yield _super("doPack").call(this, options, outDir, appOutDir, arch, customBuildOptions);
+            yield this.sign(appOutDir);
+        });
+    }
+    sign(appOutDir) {
+        return __awaiter(this, void 0, void 0, function* () {
+            const cscInfo = yield this.cscInfo;
+            if (cscInfo != null) {
+                const filename = `${ this.appName }.exe`;
+                util_1.log(`Signing ${ filename } (certificate file "${ cscInfo.file }")`);
+                yield this.doSign({
                     path: path.join(appOutDir, filename),
-                    cert: yield this.certFilePromise,
-                    password: this.options.cscKeyPassword,
+                    cert: cscInfo.file,
+                    password: cscInfo.password,
                     name: this.appName,
                     site: yield this.computePackageUrl(),
                     overwrite: true,
                     hash: this.customBuildOptions.signingHashAlgorithms
                 });
             }
+        });
+    }
+    doSign(opts) {
+        return __awaiter(this, void 0, void 0, function* () {
+            return bluebird_1.Promise.promisify(signcode_tf_1.sign)(opts);
         });
     }
     computeEffectiveDistOptions(appOutDir, installerOutDir, packOptions, setupExeName) {
@@ -98,6 +119,7 @@ class WinPackager extends platformPackager_1.PlatformPackager {
                 "product-version": packOptions["app-version"]
             };
             rceditOptions["version-string"].LegalCopyright = packOptions["app-copyright"];
+            const cscInfo = yield this.cscInfo;
             const options = Object.assign({
                 name: this.metadata.name,
                 productName: this.appName,
@@ -111,13 +133,14 @@ class WinPackager extends platformPackager_1.PlatformPackager {
                 authors: this.metadata.author.name,
                 iconUrl: iconUrl,
                 setupIcon: yield this.iconPath,
-                certificateFile: yield this.certFilePromise,
-                certificatePassword: this.options.cscKeyPassword,
+                certificateFile: cscInfo == null ? null : cscInfo.file,
+                certificatePassword: cscInfo == null ? null : cscInfo.password,
                 fixUpPaths: false,
                 skipUpdateIcon: true,
                 usePackageJson: false,
                 extraMetadataSpecs: projectUrl == null ? null : `\n    <projectUrl>${ projectUrl }</projectUrl>`,
                 copyright: packOptions["app-copyright"],
+                packageCompressionLevel: this.devMetadata.build.compression === "store" ? 0 : 9,
                 sign: {
                     name: this.appName,
                     site: projectUrl,
@@ -139,7 +162,7 @@ class WinPackager extends platformPackager_1.PlatformPackager {
         return __awaiter(this, void 0, void 0, function* () {
             const winstaller = require("electron-winstaller-fixed");
             const version = this.metadata.version;
-            const archSuffix = arch === "x64" ? "" : "-" + arch;
+            const archSuffix = platformPackager_1.getArchSuffix(arch);
             const setupExeName = `${ this.appName } Setup ${ version }${ archSuffix }.exe`;
             const distOptions = yield this.computeEffectiveDistOptions(appOutDir, installerOutDir, packOptions, setupExeName);
             yield winstaller.createWindowsInstaller(distOptions);
@@ -193,7 +216,7 @@ function isIco(buffer) {
     return buffer.readUInt16LE(0) === 0 && buffer.readUInt16LE(2) === 1;
 }
 function computeDistOut(outDir, arch) {
-    return path.join(outDir, `win${ platformPackager_1.archSuffix(arch) }`);
+    return path.join(outDir, `win${ platformPackager_1.getArchSuffix(arch) }`);
 }
 exports.computeDistOut = computeDistOut;
 function checkConflictingOptions(options) {

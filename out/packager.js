@@ -1,5 +1,7 @@
 "use strict";
 
+var _slicedToArray = function () { function sliceIterator(arr, i) { var _arr = []; var _n = true; var _d = false; var _e = undefined; try { for (var _i = arr[Symbol.iterator](), _s; !(_n = (_s = _i.next()).done); _n = true) { _arr.push(_s.value); if (i && _arr.length === i) break; } } catch (err) { _d = true; _e = err; } finally { try { if (!_n && _i["return"]) _i["return"](); } finally { if (_d) throw _e; } } return _arr; } return function (arr, i) { if (Array.isArray(arr)) { return arr; } else if (Symbol.iterator in Object(arr)) { return sliceIterator(arr, i); } else { throw new TypeError("Invalid attempt to destructure non-iterable instance"); } }; }();
+
 const path = require("path");
 const util_1 = require("./util");
 const promise_1 = require("./promise");
@@ -36,39 +38,51 @@ class Packager {
     build() {
         return __awaiter(this, void 0, void 0, function* () {
             const devPackageFile = this.devPackageFile;
-            const platforms = this.options.platform;
             this.devMetadata = deepAssign((yield util_1.readPackageJson(devPackageFile)), this.options.devMetadata);
             this.appDir = yield util_1.computeDefaultAppDirectory(this.projectDir, util_1.use(this.devMetadata.directories, it => it.app));
             this.isTwoPackageJsonProjectLayoutUsed = this.appDir !== this.projectDir;
             const appPackageFile = this.projectDir === this.appDir ? devPackageFile : path.join(this.appDir, "package.json");
             this.metadata = appPackageFile === devPackageFile ? this.devMetadata : yield util_1.readPackageJson(appPackageFile);
-            this.checkMetadata(appPackageFile, devPackageFile, platforms);
+            this.checkMetadata(appPackageFile, devPackageFile);
             checkConflictingOptions(this.devMetadata.build);
             this.electronVersion = yield util_1.getElectronVersion(this.devMetadata, devPackageFile);
             const cleanupTasks = [];
-            return promise_1.executeFinally(this.doBuild(platforms, cleanupTasks), () => promise_1.all(cleanupTasks.map(it => it())));
+            return promise_1.executeFinally(this.doBuild(cleanupTasks), () => promise_1.all(cleanupTasks.map(it => it())));
         });
     }
-    doBuild(platforms, cleanupTasks) {
+    doBuild(cleanupTasks) {
         return __awaiter(this, void 0, void 0, function* () {
             const distTasks = [];
             const outDir = path.resolve(this.projectDir, util_1.use(this.devMetadata.directories, it => it.output) || "dist");
             // custom packager - don't check wine
             let checkWine = this.options.platformPackagerFactory == null;
-            for (let platform of platforms) {
+            for (let _ref of this.options.targets) {
+                var _ref2 = _slicedToArray(_ref, 2);
+
+                let platform = _ref2[0];
+                let archToType = _ref2[1];
+
+                if (platform === metadata_1.Platform.OSX && process.platform === metadata_1.Platform.WINDOWS.nodeName) {
+                    throw new Error("Build for OS X is supported only on OS X, please see https://github.com/electron-userland/electron-builder/wiki/Multi-Platform-Build");
+                }
                 let wineCheck = null;
                 if (checkWine && process.platform !== "win32" && platform === metadata_1.Platform.WINDOWS) {
                     wineCheck = util_1.exec("wine", ["--version"]);
                 }
                 const helper = this.createHelper(platform, cleanupTasks);
-                for (let arch of normalizeArchs(platform, this.options.arch)) {
+                for (let _ref3 of archToType) {
+                    var _ref4 = _slicedToArray(_ref3, 2);
+
+                    let arch = _ref4[0];
+                    let targets = _ref4[1];
+
                     yield this.installAppDependencies(platform, arch);
                     if (checkWine && wineCheck != null) {
                         checkWine = false;
                         checkWineVersion(wineCheck);
                     }
                     // electron-packager uses productName in the directory name
-                    yield helper.pack(outDir, arch, distTasks);
+                    yield helper.pack(outDir, arch, helper.computeEffectiveTargets(targets), distTasks);
                 }
             }
             return yield bluebird_1.Promise.all(distTasks);
@@ -95,12 +109,12 @@ class Packager {
                 throw new Error(`Unknown platform: ${ platform }`);
         }
     }
-    checkMetadata(appPackageFile, devAppPackageFile, platforms) {
+    checkMetadata(appPackageFile, devAppPackageFile) {
         const reportError = missedFieldName => {
             throw new Error(`Please specify '${ missedFieldName }' in the application package.json ('${ appPackageFile }')`);
         };
         const checkNotEmpty = (name, value) => {
-            if (isEmptyOrSpaces(value)) {
+            if (util_1.isEmptyOrSpaces(value)) {
                 reportError(name);
             }
         };
@@ -125,7 +139,7 @@ class Packager {
             const author = appMetadata.author;
             if (author == null) {
                 reportError("author");
-            } else if (author.email == null && platforms.indexOf(metadata_1.Platform.LINUX) !== -1) {
+            } else if (author.email == null && this.options.targets.has(metadata_1.Platform.LINUX)) {
                 throw new Error(util.format(errorMessages.authorEmailIsMissed, appPackageFile));
             }
             if (this.devMetadata.build.name != null) {
@@ -134,11 +148,11 @@ class Packager {
         }
     }
     installAppDependencies(platform, arch) {
-        if (!this.options.npmRebuild) {
-            util_1.log("Skip app dependencies rebuild because npmRebuild is set to false");
-        } else if (this.isTwoPackageJsonProjectLayoutUsed) {
-            if (platform.nodeName === process.platform) {
-                return util_1.installDependencies(this.appDir, this.electronVersion, arch, "rebuild");
+        if (this.isTwoPackageJsonProjectLayoutUsed) {
+            if (this.devMetadata.build.npmRebuild === false) {
+                util_1.log("Skip app dependencies rebuild because npmRebuild is set to false");
+            } else if (platform.nodeName === process.platform) {
+                return util_1.installDependencies(this.appDir, this.electronVersion, metadata_1.Arch[arch], "rebuild");
             } else {
                 util_1.log("Skip app dependencies rebuild because platform is different");
             }
@@ -149,14 +163,6 @@ class Packager {
     }
 }
 exports.Packager = Packager;
-function normalizeArchs(platform, arch) {
-    if (platform === metadata_1.Platform.OSX) {
-        return ["x64"];
-    } else {
-        return arch == null ? [process.arch] : arch === "all" ? ["ia32", "x64"] : [arch];
-    }
-}
-exports.normalizeArchs = normalizeArchs;
 function normalizePlatforms(rawPlatforms) {
     const platforms = rawPlatforms == null || Array.isArray(rawPlatforms) ? rawPlatforms : [rawPlatforms];
     if (platforms == null || platforms.length === 0) {
@@ -204,8 +210,5 @@ function checkWineVersion(checkPromise) {
             throw new Error(wineError(`wine 1.8+ is required, but your version is ${ wineVersion }`));
         }
     });
-}
-function isEmptyOrSpaces(s) {
-    return s == null || s.trim().length === 0;
 }
 //# sourceMappingURL=packager.js.map

@@ -32,7 +32,7 @@ class LinuxPackager extends platformPackager_1.PlatformPackager {
             if (process.platform === "win32" || process.env.USE_SYSTEM_FPM === "true") {
                 this.fpmPath = bluebird_1.Promise.resolve("fpm");
             } else {
-                this.fpmPath = fpmDownload_1.downloadFpm(process.platform === "darwin" ? "1.5.0-1" : "1.5.0-2.3.1", process.platform === "darwin" ? "osx" : `linux-x86${ process.arch === "ia32" ? "" : "_64" }`);
+                this.fpmPath = fpmDownload_1.downloadFpm(process.platform === "darwin" ? "1.5.1-20150715-2.2.2" : "1.5.0-2.3.1", process.platform === "darwin" ? "osx" : `linux-x86${ process.arch === "ia32" ? "" : "_64" }`);
             }
         }
     }
@@ -55,17 +55,11 @@ class LinuxPackager extends platformPackager_1.PlatformPackager {
             return (_ref = []).concat.apply(_ref, _toConsumableArray((yield bluebird_1.Promise.all(promises))));
         });
     }
-    pack(outDir, arch, postAsyncTasks) {
+    pack(outDir, arch, targets, postAsyncTasks) {
         return __awaiter(this, void 0, void 0, function* () {
             const appOutDir = this.computeAppOutDir(outDir, arch);
             yield this.doPack(this.computePackOptions(outDir, appOutDir, arch), outDir, appOutDir, arch, this.customBuildOptions);
-            for (let target of this.targets) {
-                if (target === "zip" || target === "7z" || target.startsWith("tar.")) {
-                    const destination = path.join(outDir, `${ this.metadata.name }-${ this.metadata.version }${ platformPackager_1.archSuffix(arch) }.${ target }`);
-                    yield this.archiveApp(target, appOutDir, destination).then(() => this.dispatchArtifactCreated(destination));
-                }
-            }
-            postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch));
+            postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch, targets));
         });
     }
     computeDesktop(tempDir) {
@@ -153,16 +147,28 @@ Icon=${ this.metadata.name }
             return yield bluebird_1.Promise.all([afterInstallFilePath, afterRemoveFilePath]);
         });
     }
-    packageInDistributableFormat(outDir, appOutDir, arch) {
+    packageInDistributableFormat(outDir, appOutDir, arch, targets) {
         return __awaiter(this, void 0, void 0, function* () {
-            // todo fix fpm - if we run in parallel, get strange tar errors
-            for (let target of this.targets) {
+            // todo fix fpm - if run in parallel, get strange tar errors
+            for (let target of targets) {
                 target = target === "default" ? "deb" : target;
                 if (target !== "dir" && target !== "zip" && target !== "7z" && !target.startsWith("tar.")) {
-                    const destination = path.join(outDir, `${ this.metadata.name }-${ this.metadata.version }${ platformPackager_1.archSuffix(arch) }.${ target }`);
+                    const destination = path.join(outDir, `${ this.metadata.name }-${ this.metadata.version }${ platformPackager_1.getArchSuffix(arch) }.${ target }`);
                     yield this.buildPackage(destination, target, this.buildOptions, appOutDir, arch);
                     this.dispatchArtifactCreated(destination);
                 }
+            }
+            const promises = [];
+            // https://github.com/electron-userland/electron-builder/issues/460
+            // for some reasons in parallel to fmp we cannot use tar
+            for (let target of targets) {
+                if (target === "zip" || target === "7z" || target.startsWith("tar.")) {
+                    const destination = path.join(outDir, `${ this.metadata.name }-${ this.metadata.version }${ platformPackager_1.getArchSuffix(arch) }.${ target }`);
+                    promises.push(this.archiveApp(target, appOutDir, destination).then(() => this.dispatchArtifactCreated(destination)));
+                }
+            }
+            if (promises.length > 0) {
+                yield bluebird_1.Promise.all(promises);
             }
         });
     }
@@ -175,7 +181,7 @@ Icon=${ this.metadata.name }
             }
             const author = options.maintainer || `${ this.metadata.author.name } <${ this.metadata.author.email }>`;
             const synopsis = options.synopsis;
-            const args = ["-s", "dir", "-t", target, "--architecture", arch === "ia32" ? "i386" : "amd64", "--name", this.metadata.name, "--force", "--after-install", scripts[0], "--after-remove", scripts[1], "--description", platformPackager_1.smarten(target === "rpm" ? this.buildOptions.description : `${ synopsis || "" }\n ${ this.buildOptions.description }`), "--maintainer", author, "--vendor", options.vendor || author, "--version", this.metadata.version, "--package", destination, "--url", projectUrl];
+            const args = ["-s", "dir", "-t", target, "--architecture", arch === metadata_1.Arch.ia32 ? "i386" : "amd64", "--name", this.metadata.name, "--force", "--after-install", scripts[0], "--after-remove", scripts[1], "--description", platformPackager_1.smarten(target === "rpm" ? this.buildOptions.description : `${ synopsis || "" }\n ${ this.buildOptions.description }`), "--maintainer", author, "--vendor", options.vendor || author, "--version", this.metadata.version, "--package", destination, "--url", projectUrl];
             if (target === "deb") {
                 args.push("--deb-compression", options.compression || (this.devMetadata.build.compression === "store" ? "gz" : "xz"));
             } else if (target === "rpm") {

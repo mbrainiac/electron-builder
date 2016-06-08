@@ -16,12 +16,9 @@ class OsXPackager extends platformPackager_1.PlatformPackager {
         if (this.options.cscLink == null) {
             this.codeSigningInfo = bluebird_1.Promise.resolve(null);
         } else {
-            if (this.options.cscKeyPassword == null) {
-                throw new Error("cscLink is set, but cscKeyPassword not");
-            }
             const keychainName = codeSign_1.generateKeychainName();
             cleanupTasks.push(() => codeSign_1.deleteKeychain(keychainName));
-            this.codeSigningInfo = codeSign_1.createKeychain(keychainName, this.options.cscLink, this.options.cscKeyPassword, this.options.cscInstallerLink, this.options.cscInstallerKeyPassword);
+            this.codeSigningInfo = codeSign_1.createKeychain(keychainName, this.options.cscLink, this.getCscPassword(), this.options.cscInstallerLink, this.options.cscInstallerKeyPassword);
         }
     }
     get platform() {
@@ -30,17 +27,17 @@ class OsXPackager extends platformPackager_1.PlatformPackager {
     get supportedTargets() {
         return ["dmg", "mas"];
     }
-    pack(outDir, arch, postAsyncTasks) {
+    pack(outDir, arch, targets, postAsyncTasks) {
         return __awaiter(this, void 0, void 0, function* () {
             const packOptions = this.computePackOptions(outDir, this.computeAppOutDir(outDir, arch), arch);
             let nonMasPromise = null;
-            if (this.targets.length > 1 || this.targets[0] !== "mas") {
+            if (targets.length > 1 || targets[0] !== "mas") {
                 const appOutDir = this.computeAppOutDir(outDir, arch);
                 nonMasPromise = this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions).then(() => this.sign(appOutDir, null)).then(() => {
-                    postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, arch));
+                    postAsyncTasks.push(this.packageInDistributableFormat(outDir, appOutDir, targets));
                 });
             }
-            if (this.targets.indexOf("mas") !== -1) {
+            if (targets.indexOf("mas") !== -1) {
                 // osx-sign - disable warning
                 const appOutDir = path.join(outDir, "mas");
                 const masBuildOptions = deepAssign({}, this.customBuildOptions, this.devMetadata.build["mas"]);
@@ -57,14 +54,13 @@ class OsXPackager extends platformPackager_1.PlatformPackager {
     static findIdentity(certType, name) {
         return __awaiter(this, void 0, void 0, function* () {
             let identity = process.env.CSC_NAME || name;
-            if (identity == null || identity.trim().length === 0) {
+            if (util_1.isEmptyOrSpaces(identity)) {
                 return yield codeSign_1.findIdentity(certType);
             } else {
                 identity = identity.trim();
-                checkPrefix(identity, "Developer ID Application:");
-                checkPrefix(identity, "3rd Party Mac Developer Application:");
-                checkPrefix(identity, "Developer ID Installer:");
-                checkPrefix(identity, "3rd Party Mac Developer Installer:");
+                for (let prefix of codeSign_1.appleCertificatePrefixes) {
+                    checkPrefix(identity, prefix);
+                }
                 const result = yield codeSign_1.findIdentity(certType, identity);
                 if (result == null) {
                     throw new Error(`Identity name "${ identity }" is specified, but no valid identity with this name in the keychain`);
@@ -117,7 +113,8 @@ class OsXPackager extends platformPackager_1.PlatformPackager {
             const baseSignOptions = {
                 app: path.join(appOutDir, `${ this.appName }.app`),
                 platform: masOptions == null ? "darwin" : "mas",
-                keychain: codeSigningInfo.keychainName
+                keychain: codeSigningInfo.keychainName,
+                version: this.info.electronVersion
             };
             const signOptions = Object.assign({
                 identity: identity
@@ -127,7 +124,7 @@ class OsXPackager extends platformPackager_1.PlatformPackager {
             if (customSignOptions.entitlements != null) {
                 signOptions.entitlements = customSignOptions.entitlements;
             } else {
-                const p = `${ masOptions == null ? "osx" : "mas" }.entitlements`;
+                const p = `entitlements.${ masOptions == null ? "osx" : "mas" }.plist`;
                 if (resourceList.indexOf(p) !== -1) {
                     signOptions.entitlements = path.join(this.buildResourcesDir, p);
                 }
@@ -135,7 +132,7 @@ class OsXPackager extends platformPackager_1.PlatformPackager {
             if (customSignOptions.entitlementsInherit != null) {
                 signOptions["entitlements-inherit"] = customSignOptions.entitlementsInherit;
             } else {
-                const p = `${ masOptions == null ? "osx" : "mas" }.inherit.entitlements`;
+                const p = `entitlements.${ masOptions == null ? "osx" : "mas" }.inherit.plist`;
                 if (resourceList.indexOf(p) !== -1) {
                     signOptions["entitlements-inherit"] = path.join(this.buildResourcesDir, p);
                 }
@@ -153,12 +150,12 @@ class OsXPackager extends platformPackager_1.PlatformPackager {
     }
     doSign(opts) {
         return __awaiter(this, void 0, void 0, function* () {
-            return bluebird_1.Promise.promisify(electron_osx_sign_tf_1.sign)(opts);
+            return electron_osx_sign_tf_1.signAsync(opts);
         });
     }
     doFlat(opts) {
         return __awaiter(this, void 0, void 0, function* () {
-            return bluebird_1.Promise.promisify(electron_osx_sign_tf_1.flat)(opts);
+            return electron_osx_sign_tf_1.flatAsync(opts);
         });
     }
     computeEffectiveDistOptions(appOutDir) {
@@ -191,9 +188,9 @@ class OsXPackager extends platformPackager_1.PlatformPackager {
             return specification;
         });
     }
-    packageInDistributableFormat(outDir, appOutDir, arch) {
+    packageInDistributableFormat(outDir, appOutDir, targets) {
         const promises = [];
-        for (let target of this.targets) {
+        for (let target of targets) {
             if (target === "dmg" || target === "default") {
                 promises.push(this.createDmg(appOutDir));
             }

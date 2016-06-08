@@ -14,12 +14,12 @@ const ProgressBar = require("progress");
 const __awaiter = require("./awaiter");
 class GitHubPublisher {
     constructor(owner, repo, version, token) {
-        let createReleaseIfNotExists = arguments.length <= 4 || arguments[4] === undefined ? true : arguments[4];
+        let policy = arguments.length <= 4 || arguments[4] === undefined ? "always" : arguments[4];
 
         this.owner = owner;
         this.repo = repo;
         this.token = token;
-        this.createReleaseIfNotExists = createReleaseIfNotExists;
+        this.policy = policy;
         if (token == null || token.length === 0) {
             throw new Error("GitHub Personal Access Token is not specified");
         }
@@ -31,21 +31,28 @@ class GitHubPublisher {
     }
     init() {
         return __awaiter(this, void 0, void 0, function* () {
+            const createReleaseIfNotExists = this.policy !== "onTagOrDraft";
             // we don't use "Get a release by tag name" because "tag name" means existing git tag, but we draft release and don't create git tag
             const releases = yield gitHubRequest_1.gitHubRequest(`/repos/${ this.owner }/${ this.repo }/releases`, this.token);
             for (let release of releases) {
                 if (release.tag_name === this.tag) {
                     if (!release.draft) {
-                        if (this.createReleaseIfNotExists) {
+                        if (this.policy === "onTag") {
                             throw new Error("Release must be a draft");
                         } else {
+                            const message = `Release ${ this.tag } is not a draft, artifacts will be not published`;
+                            if (this.policy === "always") {
+                                util_1.warn(message);
+                            } else {
+                                util_1.log(message);
+                            }
                             return null;
                         }
                     }
                     return release;
                 }
             }
-            if (this.createReleaseIfNotExists) {
+            if (createReleaseIfNotExists) {
                 util_1.log("Release %s doesn't exists, creating one", this.tag);
                 return this.createRelease();
             } else {
@@ -135,7 +142,7 @@ class GitHubPublisher {
                     throw e;
                 }
             }
-            util_1.log("WARN: Cannot delete release " + this._releasePromise.value().id);
+            util_1.warn(`Cannot delete release ${ this._releasePromise.value().id }`);
         });
     }
 }

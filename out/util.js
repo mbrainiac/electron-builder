@@ -188,8 +188,14 @@ function debug7zArgs(command) {
 }
 exports.debug7zArgs = debug7zArgs;
 let tmpDirCounter = 0;
+// add date to avoid use stale temp dir
+const tempDirPrefix = `${ process.pid.toString(36) }-${ Date.now().toString(36) }`;
 function getTempName(prefix) {
-    return `${ prefix == null ? "" : prefix + "-" }${ process.pid }-${ tmpDirCounter++ }`;
+    return `${ prefix == null ? "" : prefix + "-" }${ tempDirPrefix }-${ (tmpDirCounter++).toString(36) }`;
 }
 exports.getTempName = getTempName;
+function isEmptyOrSpaces(s) {
+    return s == null || s.trim().length === 0;
+}
+exports.isEmptyOrSpaces = isEmptyOrSpaces;
 //# sourceMappingURL=util.js.map

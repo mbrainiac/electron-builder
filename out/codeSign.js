@@ -11,6 +11,7 @@ const crypto_1 = require("crypto");
 const os_2 = require("os");
 //noinspection JSUnusedLocalSymbols
 const __awaiter = require("./awaiter");
+exports.appleCertificatePrefixes = ["Developer ID Application:", "3rd Party Mac Developer Application:", "Developer ID Installer:", "3rd Party Mac Developer Installer:"];
 function generateKeychainName() {
     return path.join(os_1.tmpdir(), util_1.getTempName("csc") + ".keychain");
 }
@@ -123,20 +124,36 @@ function downloadCertificate(cscLink) {
     return downloadUrlOrBase64(cscLink, certPath).thenReturn(certPath);
 }
 exports.downloadCertificate = downloadCertificate;
-let findIdentityRawResult = null;
+exports.findIdentityRawResult = null;
 function findIdentity(namePrefix, qualifier) {
     return __awaiter(this, void 0, void 0, function* () {
-        if (findIdentityRawResult == null) {
-            findIdentityRawResult = util_1.exec("security", ["find-identity", "-v", "-p", "codesigning"]);
+        if (exports.findIdentityRawResult == null) {
+            exports.findIdentityRawResult = util_1.exec("security", ["find-identity", "-v", "-p", "codesigning"]);
         }
-        const lines = (yield findIdentityRawResult).split("\n");
+        const lines = (yield exports.findIdentityRawResult).trim().split("\n");
+        // ignore last line valid identities found
+        lines.length = lines.length - 1;
         for (let line of lines) {
             if (qualifier != null && !(line.indexOf(qualifier) !== -1)) {
                 continue;
             }
-            const location = line.indexOf(namePrefix);
-            if (location >= 0) {
-                return line.substring(location, line.lastIndexOf('"'));
+            if (line.indexOf(namePrefix) !== -1) {
+                return line.substring(line.indexOf('"') + 1, line.lastIndexOf('"'));
+            }
+        }
+        if (namePrefix === "Developer ID Application") {
+            // find non-Apple certificate
+            // https://github.com/electron-userland/electron-builder/issues/458
+            l: for (let line of lines) {
+                if (qualifier != null && !(line.indexOf(qualifier) !== -1)) {
+                    continue;
+                }
+                for (let prefix of exports.appleCertificatePrefixes) {
+                    if (line.indexOf(prefix) !== -1) {
+                        continue l;
+                    }
+                }
+                return line.substring(line.indexOf('"') + 1, line.lastIndexOf('"'));
             }
         }
         return null;

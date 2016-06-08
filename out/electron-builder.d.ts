@@ -8,17 +8,39 @@ declare module 'electron-builder/out/builder' {
   import { PackagerOptions } from "electron-builder/out/platformPackager"
   import { PublishOptions, Publisher } from "electron-builder/out/gitHubPublisher"
   import { InfoRetriever } from "electron-builder/out/repositoryInfo"
+  import { Platform, Arch } from "electron-builder/out/metadata"
 
   export function createPublisher(packager: Packager, options: BuildOptions, repoSlug: InfoRetriever, isPublishOptionGuessed?: boolean): Promise<Publisher | null>
 
   export interface BuildOptions extends PackagerOptions, PublishOptions {
   }
 
-  export function build(originalOptions?: BuildOptions): Promise<void>
+  export interface CliOptions extends PackagerOptions, PublishOptions {
+    osx?: Array<string>
+    linux?: Array<string>
+    win?: Array<string>
+    arch?: string
+    x64?: boolean
+    ia32?: boolean
+    platform?: string
+  }
+
+  export function normalizeOptions(args: CliOptions): BuildOptions
+
+  export function createTargets(platforms: Array<Platform>, type?: string | null, arch?: string | null): Map<Platform, Map<Arch, Array<string>>>
+
+  export function build(rawOptions?: CliOptions): Promise<void>
+}
+
+declare module 'electron-builder/out/cliOptions' {
+  
+  export function createYargs(): any
 }
 
 declare module 'electron-builder/out/codeSign' {
   import { Promise as BluebirdPromise } from "bluebird"
+  export const appleCertificatePrefixes: string[]
+  export type CertType = "Developer ID Application" | "3rd Party Mac Developer Application" | "Developer ID Installer" | "3rd Party Mac Developer Installer"
 
   export interface CodeSigningInfo {
     name: string
@@ -35,8 +57,9 @@ declare module 'electron-builder/out/codeSign' {
   export function deleteKeychain(keychainName: string, ignoreNotFound?: boolean): BluebirdPromise<any>
 
   export function downloadCertificate(cscLink: string): Promise<string>
+  export let findIdentityRawResult: Promise<string> | null
 
-  export function findIdentity(namePrefix: string, qualifier?: string): Promise<string | null>
+  export function findIdentity(namePrefix: CertType, qualifier?: string): Promise<string | null>
 }
 
 declare module 'electron-builder/out/errorMessages' {
@@ -65,7 +88,7 @@ declare module 'electron-builder/out/gitHubPublisher' {
 
   export class GitHubPublisher implements Publisher {
     readonly releasePromise: Promise<Release | null>
-    constructor(owner: string, repo: string, version: string, token: string | null, createReleaseIfNotExists?: boolean)
+    constructor(owner: string, repo: string, version: string, token: string | null, policy?: string)
     upload(file: string, artifactName?: string): Promise<void>
     deleteRelease(): Promise<void>
   }
@@ -89,6 +112,12 @@ declare module 'electron-builder/out/gitHubRequest' {
   }
 }
 
+declare module 'electron-builder/out/globby' {
+  import { Options } from "glob"
+
+  export function globby(patterns: Array<string>, opts: Options): Promise<Set<string>>
+}
+
 declare module 'electron-builder/out/httpRequest' {
   import { ClientRequest } from "http"
   import { Promise as BluebirdPromise } from "bluebird"
@@ -99,27 +128,28 @@ declare module 'electron-builder/out/httpRequest' {
 
 declare module 'electron-builder' {
   export { Packager } from "electron-builder/out/packager"
-  export { PackagerOptions, ArtifactCreated, DIR_TARGET } from "electron-builder/out/platformPackager"
-  export { BuildOptions, build, createPublisher } from "electron-builder/out/builder"
+  export { PackagerOptions, ArtifactCreated, DIR_TARGET, BuildInfo } from "electron-builder/out/platformPackager"
+  export { BuildOptions, build, createPublisher, CliOptions, createTargets } from "electron-builder/out/builder"
   export { PublishOptions, Publisher } from "electron-builder/out/gitHubPublisher"
-  export { AppMetadata, DevMetadata, Platform, getProductName, BuildMetadata, OsXBuildOptions, WinBuildOptions, LinuxBuildOptions } from "electron-builder/out/metadata"
+  export { AppMetadata, DevMetadata, Platform, Arch, archFromString, getProductName, BuildMetadata, OsXBuildOptions, WinBuildOptions, LinuxBuildOptions } from "electron-builder/out/metadata"
 }
 
 declare module 'electron-builder/out/linuxPackager' {
   import { PlatformPackager, BuildInfo } from "electron-builder/out/platformPackager"
-  import { Platform, LinuxBuildOptions } from "electron-builder/out/metadata"
+  import { Platform, LinuxBuildOptions, Arch } from "electron-builder/out/metadata"
 
   export class LinuxPackager extends PlatformPackager<LinuxBuildOptions> {
     constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>)
     protected readonly supportedTargets: Array<string>
     readonly platform: Platform
-    pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any>
-    protected packageInDistributableFormat(outDir: string, appOutDir: string, arch: string): Promise<any>
+    pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any>
+    protected packageInDistributableFormat(outDir: string, appOutDir: string, arch: Arch, targets: Array<string>): Promise<any>
   }
 }
 
 declare module 'electron-builder/out/metadata' {
   import { ElectronPackagerOptions } from "electron-packager-tf"
+  import { AsarOptions } from "asar"
 
   export interface Metadata {
     readonly repository?: string | RepositoryInfo | null
@@ -155,7 +185,7 @@ declare module 'electron-builder/out/metadata' {
   export interface BuildMetadata {
     readonly "app-bundle-id"?: string | null
     readonly "app-category-type"?: string | null
-    readonly asar?: boolean
+    readonly asar?: AsarOptions | boolean | null
     readonly iconUrl?: string | null
     readonly productName?: string | null
     /**
@@ -182,6 +212,7 @@ declare module 'electron-builder/out/metadata' {
     readonly compression?: "store" | "normal" | "maximum" | null
     readonly "build-version"?: string | null
     readonly afterPack?: (context: AfterPackContext) => Promise<any> | null
+    readonly npmRebuild?: boolean
   }
 
   export interface AfterPackContext {
@@ -238,6 +269,7 @@ declare module 'electron-builder/out/metadata' {
   export interface PlatformSpecificBuildOptions {
     readonly extraFiles?: Array<string> | null
     readonly extraResources?: Array<string> | null
+    readonly asar?: AsarOptions | boolean
     readonly target?: Array<string> | null
   }
 
@@ -250,15 +282,24 @@ declare module 'electron-builder/out/metadata' {
     static WINDOWS: Platform
     constructor(name: string, buildConfigurationKey: string, nodeName: string)
     toString(): string
+    toJSON(): string
+    createTarget(type?: string | null, ...archs: Array<Arch>): Map<Platform, Map<Arch, Array<string>>>
+    static current(): Platform
     static fromString(name: string): Platform
   }
+  export enum Arch {
+    ia32 = 0,
+    x64 = 1,
+  }
+
+  export function archFromString(name: string): Arch
 
   export function getProductName(metadata: AppMetadata, devMetadata: DevMetadata): string
 }
 
 declare module 'electron-builder/out/osxPackager' {
   import { PlatformPackager, BuildInfo } from "electron-builder/out/platformPackager"
-  import { Platform, OsXBuildOptions } from "electron-builder/out/metadata"
+  import { Platform, OsXBuildOptions, Arch } from "electron-builder/out/metadata"
   import { CodeSigningInfo } from "electron-builder/out/codeSign"
   import { SignOptions, FlatOptions } from "electron-osx-sign-tf"
 
@@ -267,11 +308,11 @@ declare module 'electron-builder/out/osxPackager' {
     constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>)
     readonly platform: Platform
     protected readonly supportedTargets: Array<string>
-    pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any>
+    pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any>
     protected doSign(opts: SignOptions): Promise<any>
     protected doFlat(opts: FlatOptions): Promise<any>
     protected computeEffectiveDistOptions(appOutDir: string): Promise<appdmg.Specification>
-    packageInDistributableFormat(outDir: string, appOutDir: string, arch: string): Promise<any>
+    protected packageInDistributableFormat(outDir: string, appOutDir: string, targets: Array<string>): Promise<any>
   }
 }
 
@@ -288,6 +329,7 @@ declare module 'electron-builder/out/packager' {
     appDir: string
     metadata: AppMetadata
     devMetadata: DevMetadata
+    isTwoPackageJsonProjectLayoutUsed: boolean
     electronVersion: string
     readonly eventEmitter: EventEmitter
     constructor(options: PackagerOptions, repositoryInfo?: InfoRetriever | null)
@@ -296,14 +338,12 @@ declare module 'electron-builder/out/packager' {
     build(): Promise<any>
   }
 
-  export function normalizeArchs(platform: Platform, arch?: string | n): string[]
-
   export function normalizePlatforms(rawPlatforms: Array<string | Platform> | string | Platform | n): Array<Platform>
 }
 
 declare module 'electron-builder/out/platformPackager' {
   import { InfoRetriever, ProjectMetadataProvider } from "electron-builder/out/repositoryInfo"
-  import { AppMetadata, DevMetadata, Platform, PlatformSpecificBuildOptions } from "electron-builder/out/metadata"
+  import { AppMetadata, DevMetadata, Platform, PlatformSpecificBuildOptions, Arch } from "electron-builder/out/metadata"
   import EventEmitter = NodeJS.EventEmitter
   import { ElectronPackagerOptions } from "electron-packager-tf"
   import { Packager } from "electron-builder/out/packager"
@@ -311,9 +351,7 @@ declare module 'electron-builder/out/platformPackager' {
   export const DIR_TARGET: string
 
   export interface PackagerOptions {
-    target?: Array<string> | null
-    platform?: Array<Platform> | null
-    arch?: string | null
+    targets?: Map<Platform, Map<Arch, string[]>>
     projectDir?: string | null
     cscLink?: string | null
     cscKeyPassword?: string | null
@@ -326,7 +364,6 @@ declare module 'electron-builder/out/platformPackager' {
      * Development `package.json` will be still read, but options specified in this object will override.
      */
     readonly devMetadata?: DevMetadata
-    readonly npmRebuild?: boolean
   }
 
   export interface BuildInfo extends ProjectMetadataProvider {
@@ -337,6 +374,7 @@ declare module 'electron-builder/out/platformPackager' {
     electronVersion: string
     repositoryInfo: InfoRetriever | n
     eventEmitter: EventEmitter
+    isTwoPackageJsonProjectLayoutUsed: boolean
   }
 
   export abstract class PlatformPackager<DC extends PlatformSpecificBuildOptions> implements ProjectMetadataProvider {
@@ -348,26 +386,26 @@ declare module 'electron-builder/out/platformPackager' {
     readonly devMetadata: DevMetadata
     readonly customBuildOptions: DC
     readonly appName: string
-    readonly targets: Array<string>
     readonly resourceList: Promise<Array<string>>
     readonly abstract platform: Platform
     constructor(info: BuildInfo)
+    protected getCscPassword(): string
+    computeEffectiveTargets(rawList: Array<string>): Array<string>
     protected hasOnlyDirTarget(): boolean
     protected readonly relativeBuildResourcesDirname: string
     protected readonly abstract supportedTargets: Array<string>
-    protected computeAppOutDir(outDir: string, arch: string): string
+    protected computeAppOutDir(outDir: string, arch: Arch): string
     protected dispatchArtifactCreated(file: string, artifactName?: string): void
-    abstract pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any>
-    protected doPack(options: ElectronPackagerOptions, outDir: string, appOutDir: string, arch: string, customBuildOptions: DC): Promise<void>
-    protected computePackOptions(outDir: string, appOutDir: string, arch: string): ElectronPackagerOptions
-    protected packApp(options: ElectronPackagerOptions, appOutDir: string): Promise<any>
-    protected copyExtraFiles(appOutDir: string, arch: string, customBuildOptions: DC): Promise<any>
+    abstract pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any>
+    protected doPack(options: ElectronPackagerOptions, outDir: string, appOutDir: string, arch: Arch, customBuildOptions: DC): Promise<void>
+    protected computePackOptions(outDir: string, appOutDir: string, arch: Arch): ElectronPackagerOptions
+    protected copyExtraFiles(appOutDir: string, arch: Arch, customBuildOptions: DC): Promise<any>
     protected computePackageUrl(): Promise<string | null>
     protected computeBuildNumber(): string | null
     protected archiveApp(format: string, appOutDir: string, outFile: string): Promise<any>
   }
 
-  export function archSuffix(arch: string): string
+  export function getArchSuffix(arch: Arch): string
 
   export interface ArtifactCreated {
     readonly file: string
@@ -461,26 +499,29 @@ declare module 'electron-builder/out/util' {
   export function debug7zArgs(command: "a" | "x"): Array<string>
 
   export function getTempName(prefix?: string | n): string
+
+  export function isEmptyOrSpaces(s: string | n): boolean
 }
 
 declare module 'electron-builder/out/winPackager' {
   import { PlatformPackager, BuildInfo } from "electron-builder/out/platformPackager"
-  import { Platform, WinBuildOptions } from "electron-builder/out/metadata"
+  import { Platform, WinBuildOptions, Arch } from "electron-builder/out/metadata"
+  import { SignOptions } from "signcode-tf"
   import { ElectronPackagerOptions } from "electron-packager-tf"
 
   export class WinPackager extends PlatformPackager<WinBuildOptions> {
-    certFilePromise: Promise<string | null>
-    readonly iconPath: Promise<string>
     constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>)
     readonly platform: Platform
     protected readonly supportedTargets: Array<string>
-    pack(outDir: string, arch: string, postAsyncTasks: Array<Promise<any>>): Promise<any>
-    protected computeAppOutDir(outDir: string, arch: string): string
-    protected packApp(options: any, appOutDir: string): Promise<void>
+    pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any>
+    protected computeAppOutDir(outDir: string, arch: Arch): string
+    protected doPack(options: ElectronPackagerOptions, outDir: string, appOutDir: string, arch: Arch, customBuildOptions: WinBuildOptions): Promise<void>
+    protected sign(appOutDir: string): Promise<void>
+    protected doSign(opts: SignOptions): Promise<any>
     protected computeEffectiveDistOptions(appOutDir: string, installerOutDir: string, packOptions: ElectronPackagerOptions, setupExeName: string): Promise<WinBuildOptions>
-    protected packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: string, packOptions: ElectronPackagerOptions): Promise<any>
+    protected packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: Arch, packOptions: ElectronPackagerOptions): Promise<any>
   }
 
-  export function computeDistOut(outDir: string, arch: string): string
+  export function computeDistOut(outDir: string, arch: Arch): string
 }
 
