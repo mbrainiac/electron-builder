@@ -1,6 +1,9 @@
 'use strict'
 
-const app = require('electron').app
+const electron = require("electron")
+const app = electron.app
+const fs = require("fs")
+const path = require("path")
 
 // this should be placed at top of main.js to handle setup events quickly
 if (handleSquirrelEvent()) {
@@ -14,7 +17,6 @@ function handleSquirrelEvent() {
   }
 
   const ChildProcess = require('child_process');
-  const path = require('path');
 
   const appFolder = path.resolve(process.execPath, '..');
   const rootAtomFolder = path.resolve(appFolder, '..');
@@ -70,7 +72,6 @@ function handleSquirrelEvent() {
   }
 }
 
-const electron = require('electron');
 // Module to control application life.
 // Module to create native browser window.
 const BrowserWindow = electron.BrowserWindow;
@@ -89,6 +90,9 @@ function createWindow () {
   // Open the DevTools.
   mainWindow.webContents.openDevTools();
 
+  mainWindow.webContents.executeJavaScript(`console.log("appData: ${app.getPath("appData").replace(/\\/g, "\\\\")}")`)
+  mainWindow.webContents.executeJavaScript(`console.log("userData: ${app.getPath("userData").replace(/\\/g, "\\\\")}")`)
+
   // Emitted when the window is closed.
   mainWindow.on('closed', function() {
     // Dereference the window object, usually you would store windows
@@ -104,17 +108,25 @@ app.on('ready', createWindow);
 
 // Quit when all windows are closed.
 app.on('window-all-closed', function () {
-  // On OS X it is common for applications and their menu bar
+  // On MacOS it is common for applications and their menu bar
   // to stay active until the user quits explicitly with Cmd + Q
   if (process.platform !== 'darwin') {
     app.quit();
   }
 });
 
-app.on('activate', function () {
-  // On OS X it's common to re-create a window in the app when the
-  // dock icon is clicked and there are no other windows open.
+app.on("activate", function () {
   if (mainWindow === null) {
-    createWindow();
+    createWindow()
   }
-});
+})
+
+electron.ipcMain.on("saveAppData", () => {
+  try {
+    // electron doesn't escape / in the product name
+    fs.writeFileSync(path.join(app.getPath("appData"), "Test App ßW", "testFile"), "test")
+  }
+  catch (e) {
+    mainWindow.webContents.executeJavaScript(`console.log(\`userData: ${e}\`)`)
+  }
+})

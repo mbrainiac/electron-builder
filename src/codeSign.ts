@@ -1,38 +1,31 @@
-import { exec, getTempName } from "./util"
+import { exec, getTempName, isEmptyOrSpaces } from "./util/util"
 import { deleteFile, outputFile, copy, rename } from "fs-extra-p"
-import { download } from "./httpRequest"
-import { tmpdir } from "os"
+import { download } from "./util/httpRequest"
 import * as path from "path"
-import { executeFinally, all } from "./promise"
+import { executeFinally, all } from "./util/promise"
 import { Promise as BluebirdPromise } from "bluebird"
 import { randomBytes } from "crypto"
 import { homedir } from "os"
+import { TmpDir } from "./util/tmp"
 
 //noinspection JSUnusedLocalSymbols
-const __awaiter = require("./awaiter")
+const __awaiter = require("./util/awaiter")
 
-export const appleCertificatePrefixes = ["Developer ID Application:", "3rd Party Mac Developer Application:", "Developer ID Installer:", "3rd Party Mac Developer Installer:"]
+const appleCertificatePrefixes = ["Developer ID Application:", "3rd Party Mac Developer Application:", "Developer ID Installer:", "3rd Party Mac Developer Installer:"]
 
 export type CertType = "Developer ID Application" | "3rd Party Mac Developer Application" | "Developer ID Installer" | "3rd Party Mac Developer Installer"
 
 export interface CodeSigningInfo {
-  name: string
   keychainName?: string | null
-
-  installerName?: string | null
 }
 
-export function generateKeychainName(): string {
-  return path.join(tmpdir(), getTempName("csc") + ".keychain")
-}
+export function downloadCertificate(urlOrBase64: string, tmpDir: TmpDir): BluebirdPromise<string> {
+  if (urlOrBase64.startsWith("file://")) {
+    return BluebirdPromise.resolve(urlOrBase64.substring("file://".length))
+  }
 
-function downloadUrlOrBase64(urlOrBase64: string, destination: string): BluebirdPromise<any> {
-  if (urlOrBase64.startsWith("https://")) {
-    return download(urlOrBase64, destination)
-  }
-  else {
-    return outputFile(destination, new Buffer(urlOrBase64, "base64"))
-  }
+  return tmpDir.getTempFile(".p12")
+    .then(tempFile => (urlOrBase64.startsWith("https://") ? download(urlOrBase64, tempFile) : outputFile(tempFile, new Buffer(urlOrBase64, "base64"))).thenReturn(tempFile))
 }
 
 let bundledCertKeychainAdded: Promise<any> | null = null
@@ -63,11 +56,13 @@ async function createCustomCertKeychain() {
   }
 }
 
-export async function createKeychain(keychainName: string, cscLink: string, cscKeyPassword: string, cscILink?: string | null, cscIKeyPassword?: string | null): Promise<CodeSigningInfo> {
+export async function createKeychain(tmpDir: TmpDir, cscLink: string, cscKeyPassword: string, cscILink?: string | null, cscIKeyPassword?: string | null): Promise<CodeSigningInfo> {
   if (bundledCertKeychainAdded == null) {
     bundledCertKeychainAdded = createCustomCertKeychain()
   }
   await bundledCertKeychainAdded
+
+  const keychainName = await tmpDir.getTempFile(".keychain")
 
   const certLinks = [cscLink]
   if (cscILink != null) {
@@ -77,97 +72,81 @@ export async function createKeychain(keychainName: string, cscLink: string, cscK
   const certPaths = new Array(certLinks.length)
   const keychainPassword = randomBytes(8).toString("hex")
   return await executeFinally(BluebirdPromise.all([
-      BluebirdPromise.map(certLinks, (link, i) => {
-        const tempFile = path.join(tmpdir(), `${getTempName()}.p12`)
-        certPaths[i] = tempFile
-        return downloadUrlOrBase64(link, tempFile)
-      }),
+      BluebirdPromise.map(certLinks, (link, i) => downloadCertificate(link, tmpDir).then(it => certPaths[i] = it)),
       BluebirdPromise.mapSeries([
         ["create-keychain", "-p", keychainPassword, keychainName],
         ["unlock-keychain", "-p", keychainPassword, keychainName],
         ["set-keychain-settings", "-t", "3600", "-u", keychainName]
       ], it => exec("security", it))
     ])
-    .then(() => importCerts(keychainName, certPaths, <Array<string>>[cscKeyPassword, cscIKeyPassword].filter(it => it != null))),
-    errorOccurred => {
-      const tasks = certPaths.map(it => deleteFile(it, true))
-      if (errorOccurred) {
-        tasks.push(deleteKeychain(keychainName))
-      }
-      return all(tasks)
-    })
+    .then<CodeSigningInfo>(() => importCerts(keychainName, certPaths, <Array<string>>[cscKeyPassword, cscIKeyPassword].filter(it => it != null))),
+    () => all(certPaths.map((it, index) => certLinks[index].startsWith("https://") ? deleteFile(it, true) : BluebirdPromise.resolve())))
 }
 
 async function importCerts(keychainName: string, paths: Array<string>, keyPasswords: Array<string>): Promise<CodeSigningInfo> {
-  const namePromises: Array<Promise<string>> = []
   for (let i = 0; i < paths.length; i++) {
-    const password = keyPasswords[i]
-    const certPath = paths[i]
-    await exec("security", ["import", certPath, "-k", keychainName, "-T", "/usr/bin/codesign", "-T", "/usr/bin/productbuild", "-P", password])
-
-    namePromises.push(extractCommonName(password, certPath))
+    await exec("security", ["import", paths[i], "-k", keychainName, "-T", "/usr/bin/codesign", "-T", "/usr/bin/productbuild", "-P", keyPasswords[i]])
   }
 
-  const names = await BluebirdPromise.all(namePromises)
   return {
-    name: names[0],
-    installerName: names.length > 1 ? names[1] : null,
     keychainName: keychainName,
   }
 }
 
-function extractCommonName(password: string, certPath: string): BluebirdPromise<string> {
-  return exec("openssl", ["pkcs12", "-nokeys", "-nodes", "-passin", "pass:" + password, "-nomacver", "-clcerts", "-in", certPath])
-    .then(result => {
-      const match = <Array<string | null> | null>(result.match(/^subject.*\/CN=([^\/\n]+)/m))
-      if (match == null || match[1] == null) {
-        throw new Error("Cannot extract common name from p12")
-      }
-      else {
-        return match[1]!
-      }
-    })
-}
-
-export function sign(path: string, options: CodeSigningInfo): BluebirdPromise<any> {
-  const args = ["--deep", "--force", "--sign", options.name, path]
-  if (options.keychainName != null) {
-    args.push("--keychain", options.keychainName)
+export function sign(path: string, name: string, keychain: string): BluebirdPromise<any> {
+  const args = ["--deep", "--force", "--sign", name, path]
+  if (keychain != null) {
+    args.push("--keychain", keychain)
   }
   return exec("codesign", args)
 }
 
-export function deleteKeychain(keychainName: string, ignoreNotFound: boolean = true): BluebirdPromise<any> {
-  const result = exec("security", ["delete-keychain", keychainName])
-  if (ignoreNotFound) {
-    return result.catch(error => {
-      if (!error.message.includes("The specified keychain could not be found.")) {
-        throw error
-      }
-    })
+export let findIdentityRawResult: Promise<Array<string>> | null = null
+
+async function getValidIdentities(keychain?: string | null): Promise<Array<string>> {
+  function addKeychain(args: Array<string>) {
+    if (keychain != null) {
+      args.push(keychain)
+    }
+    return args
   }
-  else {
-    return result
+
+  let result = findIdentityRawResult
+  if (result == null || keychain != null) {
+    // https://github.com/electron-userland/electron-builder/issues/481
+    // https://github.com/electron-userland/electron-builder/issues/535
+    result = BluebirdPromise.all<Array<string>>([
+      exec("security", addKeychain(["find-identity", "-v"]))
+        .then(it => it.trim().split("\n").filter(it => {
+          for (let prefix of appleCertificatePrefixes) {
+            if (it.includes(prefix)) {
+              return true
+            }
+          }
+          return false
+        })),
+      exec("security", addKeychain(["find-identity", "-v", "-p", "codesigning"]))
+        .then(it => it.trim().split(("\n"))),
+    ])
+      .then(it => {
+        const array = it[0].concat(it[1])
+          .filter(it => !it.includes("(Missing required extension)") && !it.includes("valid identities found") && !it.includes("iPhone ") && !it.includes("com.apple.idms.appleid.prd."))
+          // remove 1)
+          .map(it => it.substring(it.indexOf(")") + 1).trim())
+        return Array.from(new Set(array))
+      })
+
+    if (keychain == null) {
+      findIdentityRawResult = result
+    }
   }
+  return result
 }
 
-export function downloadCertificate(cscLink: string): Promise<string> {
-  const certPath = path.join(tmpdir(), `${getTempName()}.p12`)
-  return downloadUrlOrBase64(cscLink, certPath)
-    .thenReturn(certPath)
-}
-
-export let findIdentityRawResult: Promise<string> | null = null
-
-export async function findIdentity(namePrefix: CertType, qualifier?: string): Promise<string | null> {
-  if (findIdentityRawResult == null) {
-      findIdentityRawResult = exec("security", ["find-identity", "-v", "-p", "codesigning"])
-  }
-
-  const lines = (await findIdentityRawResult).trim().split("\n")
-  // ignore last line valid identities found
-  lines.length = lines.length - 1
-
+async function _findIdentity(namePrefix: CertType, qualifier?: string | null, keychain?: string | null): Promise<string | null> {
+  // https://github.com/electron-userland/electron-builder/issues/484
+  //noinspection SpellCheckingInspection
+  const lines = await getValidIdentities(keychain)
   for (let line of lines) {
     if (qualifier != null && !line.includes(qualifier)) {
       continue
@@ -196,4 +175,31 @@ export async function findIdentity(namePrefix: CertType, qualifier?: string): Pr
     }
   }
   return null
+}
+
+export async function findIdentity(certType: CertType, qualifier?: string | null, keychain?: string | null): Promise<string | null> {
+  let identity = process.env.CSC_NAME || qualifier
+  if (isEmptyOrSpaces(identity)) {
+    if (keychain == null && process.env.CI == null && process.env.CSC_IDENTITY_AUTO_DISCOVERY === "false") {
+      return null
+    }
+    return await _findIdentity(certType, null, keychain)
+  }
+  else {
+    identity = identity.trim()
+    for (let prefix of appleCertificatePrefixes) {
+      checkPrefix(identity, prefix)
+    }
+    const result = await _findIdentity(certType, identity, keychain)
+    if (result == null) {
+      throw new Error(`Identity name "${identity}" is specified, but no valid identity with this name in the keychain`)
+    }
+    return result
+  }
+}
+
+function checkPrefix(name: string, prefix: string) {
+  if (name.startsWith(prefix)) {
+    throw new Error(`Please remove prefix "${prefix}" from the specified name — appropriate certificate will be chosen automatically`)
+  }
 }

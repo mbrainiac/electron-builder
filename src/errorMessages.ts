@@ -1,16 +1,15 @@
 export const buildIsMissed = `Please specify 'build' configuration in the development package.json ('%s'), at least
 
   build: {
-    "app-bundle-id": "your.id",
-    "app-category-type": "your.app.category.type",
-    "iconUrl": "see https://github.com/develar/electron-builder#in-short",
+    "appId": "your.id",
+    "category": "your.app.category.type"
   }
 }
 
 is required.
 `
 
-export const authorEmailIsMissed = `Please specify author 'email' in the application package.json ('%s')
+export const authorEmailIsMissed = `Please specify author 'email' in the application package.json
 
 See https://docs.npmjs.com/files/package.json#people-fields-author-contributors
 

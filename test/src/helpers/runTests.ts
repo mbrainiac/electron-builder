@@ -1,14 +1,16 @@
 import { spawn } from "child_process"
 import * as path from "path"
 import { Promise as BluebirdPromise } from "bluebird"
-import { copy, readJson, emptyDir, unlink, readdir, outputFile, readFileSync } from "fs-extra-p"
+import { copy, emptyDir, outputFile, readdir, readFileSync, readJson, unlink, remove } from "fs-extra-p"
 import { Platform } from "out/metadata"
+import { cpus, homedir, tmpdir } from "os"
+import { TEST_DIR, ELECTRON_VERSION } from "./config"
 
 // we set NODE_PATH in this file, so, we cannot use 'out/awaiter' path here
 //noinspection JSUnusedLocalSymbols
-const __awaiter = require("../../../out/awaiter")
+const __awaiter = require("../../../out/util/awaiter")
 
-const util = require("../../../out/util")
+const util = require("../../../out/util/util")
 const utilSpawn = util.spawn
 const isEmptyOrSpaces = util.isEmptyOrSpaces
 
@@ -16,15 +18,14 @@ const downloadElectron: (options: any) => Promise<any> = BluebirdPromise.promisi
 const packager = require("../../../out/packager")
 
 const rootDir = path.join(__dirname, "..", "..", "..")
-const testPackageDir = path.join(require("os").tmpdir(), "electron_builder_published")
+const testPackageDir = path.join(tmpdir(), "electron_builder_published")
 const testNodeModules = path.join(testPackageDir, "node_modules")
-
-const electronVersion = "1.2.1"
 
 async function main() {
   await BluebirdPromise.all([
     deleteOldElectronVersion(),
     downloadAllRequiredElectronVersions(),
+    emptyDir(TEST_DIR),
     outputFile(path.join(testPackageDir, "package.json"), `{
       "private": true,
       "version": "1.0.0",
@@ -41,7 +42,12 @@ async function main() {
   await exec(["install", "--cache-min", "999999999", "--production", rootDir])
   // prune stale packages
   await exec(["prune", "--production"])
-  await runTests()
+  try {
+    await runTests()
+  }
+  finally {
+    await remove(TEST_DIR)
+  }
 }
 
 main()
@@ -55,11 +61,11 @@ async function deleteOldElectronVersion(): Promise<any> {
     return
   }
 
-  const cacheDir = path.join(require("os").homedir(), ".electron")
+  const cacheDir = path.join(homedir(), ".electron")
   try {
     const deletePromises: Array<Promise<any>> = []
     for (let file of (await readdir(cacheDir))) {
-      if (file.endsWith(".zip") && !file.includes(electronVersion)) {
+      if (file.endsWith(".zip") && !file.includes(ELECTRON_VERSION)) {
         console.log(`Remove old electron ${file}`)
         deletePromises.push(unlink(path.join(cacheDir, file)))
       }
@@ -87,7 +93,7 @@ function downloadAllRequiredElectronVersions(): Promise<any> {
   for (let platform of platforms) {
     for (let arch of (platform === "mas" || platform === "darwin" ? ["x64"] : ["ia32", "x64"])) {
       downloadPromises.push(downloadElectron({
-        version: electronVersion,
+        version: ELECTRON_VERSION,
         arch: arch,
         platform: platform,
       }))
@@ -125,6 +131,8 @@ function runTests(): BluebirdPromise<any> {
   const args: Array<string> = []
   const testFiles = process.env.TEST_FILES
 
+  args.push(`--concurrency=${cpus().length}`)
+
   const baseDir = path.join("test", "out")
   const baseForLinuxTests = [path.join(baseDir, "ArtifactPublisherTest.js"), path.join(baseDir, "httpRequestTest.js"), path.join(baseDir, "RepoSlugTest.js")]
   let skipWin = false
@@ -144,10 +152,16 @@ function runTests(): BluebirdPromise<any> {
       args.push(path.join(baseDir, "linuxPackagerTest.js"), path.join(baseDir, "BuildTest.js"), path.join(baseDir, "globTest.js"))
     }
     else {
-      args.push(path.join(baseDir, "winPackagerTest.js"))
+      args.push(path.join(baseDir, "winPackagerTest.js"), path.join(baseDir, "nsisTest.js"), path.join(baseDir, "macPackagerTest.js"))
       args.push(...baseForLinuxTests)
     }
     console.log(`Test files for node ${circleNodeIndex}: ${args.join(", ")}`)
+  }
+  else if (process.platform === "win32") {
+    args.push("test/out/*.js", "!test/out/macPackagerTest.js", "!test/out/linuxPackagerTest.js", "!test/out/CodeSignTest.js", "!test/out/ArtifactPublisherTest.js", "!test/out/httpRequestTest.js")
+  }
+  else if (!util.isCi()) {
+    args.push("test/out/*.js", "!test/out/ArtifactPublisherTest.js", "!test/out/httpRequestTest.js")
   }
 
   return utilSpawn(path.join(rootDir, "node_modules", ".bin", "ava"), args, {
@@ -155,6 +169,7 @@ function runTests(): BluebirdPromise<any> {
     env: Object.assign({}, process.env, {
       NODE_PATH: path.join(testNodeModules, "electron-builder"),
       SKIP_WIN: skipWin,
+      CSC_IDENTITY_AUTO_DISCOVERY: "false",
     }),
     shell: process.platform === "win32",
     stdio: "inherit"

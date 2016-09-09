@@ -1,23 +1,28 @@
 import * as path from "path"
 import {
-  computeDefaultAppDirectory, installDependencies, log, getElectronVersion, readPackageJson, use, warn,
-  exec, isEmptyOrSpaces
-} from "./util"
-import { all, executeFinally } from "./promise"
+  computeDefaultAppDirectory, installDependencies, getElectronVersion, use,
+  exec, isEmptyOrSpaces, statOrNull, getGypEnv
+} from "./util/util"
+import { all, executeFinally } from "./util/promise"
 import { EventEmitter } from "events"
 import { Promise as BluebirdPromise } from "bluebird"
-import { InfoRetriever } from "./repositoryInfo"
 import { AppMetadata, DevMetadata, Platform, Arch } from "./metadata"
-import { PackagerOptions, PlatformPackager, BuildInfo, ArtifactCreated } from "./platformPackager"
-import OsXPackager from "./osxPackager"
+import { PlatformPackager, BuildInfo, ArtifactCreated, Target } from "./platformPackager"
 import { WinPackager } from "./winPackager"
 import * as errorMessages from "./errorMessages"
 import * as util from "util"
-import deepAssign = require("deep-assign")
-import compareVersions = require("compare-versions")
+import { deepAssign } from "./util/deepAssign"
+import semver = require("semver")
+import { warn, log } from "./util/log"
+import { AppInfo } from "./appInfo"
+import MacPackager from "./macPackager"
+import { createTargets } from "./targets/targetFactory"
+import { readPackageJson } from "./util/readPackageJson"
+import { TmpDir } from "./util/tmp"
+import { BuildOptions } from "./builder"
 
 //noinspection JSUnusedLocalSymbols
-const __awaiter = require("./awaiter")
+const __awaiter = require("./util/awaiter")
 
 function addHandler(emitter: EventEmitter, event: string, handler: Function) {
   emitter.on(event, handler)
@@ -36,8 +41,12 @@ export class Packager implements BuildInfo {
 
   readonly eventEmitter = new EventEmitter()
 
+  appInfo: AppInfo
+
+  readonly tempDirManager = new TmpDir()
+
   //noinspection JSUnusedGlobalSymbols
-  constructor(public options: PackagerOptions, public repositoryInfo: InfoRetriever | null = null) {
+  constructor(public options: BuildOptions) {
     this.projectDir = options.projectDir == null ? process.cwd() : path.resolve(options.projectDir)
   }
 
@@ -50,35 +59,55 @@ export class Packager implements BuildInfo {
     return path.join(this.projectDir, "package.json")
   }
 
-  async build(): Promise<any> {
+  async build(): Promise<Map<Platform, Map<String, Target>>> {
     const devPackageFile = this.devPackageFile
+
+    const extraMetadata = this.options.extraMetadata
 
     this.devMetadata = deepAssign(await readPackageJson(devPackageFile), this.options.devMetadata)
     this.appDir = await computeDefaultAppDirectory(this.projectDir, use(this.devMetadata.directories, it => it!.app))
 
     this.isTwoPackageJsonProjectLayoutUsed = this.appDir !== this.projectDir
 
-    const appPackageFile = this.projectDir === this.appDir ? devPackageFile : path.join(this.appDir, "package.json")
-    this.metadata = appPackageFile === devPackageFile ? this.devMetadata : await readPackageJson(appPackageFile)
+    const appPackageFile = this.isTwoPackageJsonProjectLayoutUsed ? path.join(this.appDir, "package.json") : devPackageFile
+    if (this.isTwoPackageJsonProjectLayoutUsed) {
+      if (extraMetadata != null && extraMetadata.build != null) {
+        deepAssign(this.devMetadata, {build: extraMetadata.build})
+        delete extraMetadata.build
+      }
+
+      this.metadata = deepAssign(await readPackageJson(appPackageFile), this.options.appMetadata, extraMetadata)
+    }
+    else {
+      if (this.options.appMetadata != null) {
+        deepAssign(this.devMetadata, this.options.appMetadata)
+      }
+      if (extraMetadata != null) {
+        deepAssign(this.devMetadata, extraMetadata)
+      }
+      this.metadata = <any>this.devMetadata
+    }
 
     this.checkMetadata(appPackageFile, devPackageFile)
     checkConflictingOptions(this.devMetadata.build)
 
     this.electronVersion = await getElectronVersion(this.devMetadata, devPackageFile)
 
+    this.appInfo = new AppInfo(this.metadata, this.devMetadata)
     const cleanupTasks: Array<() => Promise<any>> = []
-    return executeFinally(this.doBuild(cleanupTasks), () => all(cleanupTasks.map(it => it())))
+    return executeFinally(this.doBuild(cleanupTasks), () => all(cleanupTasks.map(it => it()).concat(this.tempDirManager.cleanup())))
   }
 
-  private async doBuild(cleanupTasks: Array<() => Promise<any>>): Promise<any> {
+  private async doBuild(cleanupTasks: Array<() => Promise<any>>): Promise<Map<Platform, Map<String, Target>>> {
     const distTasks: Array<Promise<any>> = []
     const outDir = path.resolve(this.projectDir, use(this.devMetadata.directories, it => it!.output) || "dist")
 
+    const platformToTarget: Map<Platform, Map<String, Target>> = new Map()
     // custom packager - don't check wine
     let checkWine = this.options.platformPackagerFactory == null
     for (let [platform, archToType] of this.options.targets!) {
-      if (platform === Platform.OSX && process.platform === Platform.WINDOWS.nodeName) {
-        throw new Error("Build for OS X is supported only on OS X, please see https://github.com/electron-userland/electron-builder/wiki/Multi-Platform-Build")
+      if (platform === Platform.MAC && process.platform === Platform.WINDOWS.nodeName) {
+        throw new Error("Build for MacOS is supported only on MacOS, please see https://github.com/electron-userland/electron-builder/wiki/Multi-Platform-Build")
       }
 
       let wineCheck: Promise<string> | null = null
@@ -87,6 +116,9 @@ export class Packager implements BuildInfo {
       }
 
       const helper = this.createHelper(platform, cleanupTasks)
+      const nameToTarget: Map<String, Target> = new Map()
+      platformToTarget.set(platform, nameToTarget)
+
       for (let [arch, targets] of archToType) {
         await this.installAppDependencies(platform, arch)
 
@@ -95,11 +127,16 @@ export class Packager implements BuildInfo {
           checkWineVersion(wineCheck)
         }
 
-        // electron-packager uses productName in the directory name
-        await helper.pack(outDir, arch, helper.computeEffectiveTargets(targets), distTasks)}
+        await helper.pack(outDir, arch, createTargets(nameToTarget, targets, outDir, helper, cleanupTasks), distTasks)
+      }
+
+      for (let target of nameToTarget.values()) {
+        distTasks.push(target.finishBuild())
+      }
     }
 
-    return await BluebirdPromise.all(distTasks)
+    await BluebirdPromise.all(distTasks)
+    return platformToTarget
   }
 
   private createHelper(platform: Platform, cleanupTasks: Array<() => Promise<any>>): PlatformPackager<any> {
@@ -108,20 +145,20 @@ export class Packager implements BuildInfo {
     }
 
     switch (platform) {
-      case Platform.OSX:
+      case Platform.MAC:
       {
-        const helperClass: typeof OsXPackager = require("./osxPackager").default
-        return new helperClass(this, cleanupTasks)
+        const helperClass: typeof MacPackager = require("./macPackager").default
+        return new helperClass(this)
       }
 
       case Platform.WINDOWS:
       {
         const helperClass: typeof WinPackager = require("./winPackager").WinPackager
-        return new helperClass(this, cleanupTasks)
+        return new helperClass(this)
       }
 
       case Platform.LINUX:
-        return new (require("./linuxPackager").LinuxPackager)(this, cleanupTasks)
+        return new (require("./linuxPackager").LinuxPackager)(this)
 
       default:
         throw new Error(`Unknown platform: ${platform}`)
@@ -133,7 +170,7 @@ export class Packager implements BuildInfo {
       throw new Error(`Please specify '${missedFieldName}' in the application package.json ('${appPackageFile}')`)
     }
 
-    const checkNotEmpty = (name: string, value: string) => {
+    const checkNotEmpty = (name: string, value: string | n) => {
       if (isEmptyOrSpaces(value)) {
         reportError(name)
       }
@@ -145,44 +182,53 @@ export class Packager implements BuildInfo {
     checkNotEmpty("description", appMetadata.description)
     checkNotEmpty("version", appMetadata.version)
 
+    checkDependencies(this.devMetadata.dependencies)
     if ((<any>appMetadata) !== this.devMetadata) {
+      checkDependencies(appMetadata.dependencies)
+
       if ((<any>appMetadata).build != null) {
         throw new Error(util.format(errorMessages.buildInAppSpecified, appPackageFile, devAppPackageFile))
       }
-
-      if (this.devMetadata.homepage != null) {
-        warn("homepage in the development package.json is deprecated, please move to the application package.json")
-      }
-      if (this.devMetadata.license != null) {
-        warn("license in the development package.json is deprecated, please move to the application package.json")
-      }
     }
 
-    if (<any>this.devMetadata.build == null) {
+    const build = <any>this.devMetadata.build
+    if (build == null) {
       throw new Error(util.format(errorMessages.buildIsMissed, devAppPackageFile))
     }
     else {
       const author = appMetadata.author
-      if (<any>author == null) {
-        reportError("author")
-      }
-      else if (<any>author.email == null && this.options.targets!.has(Platform.LINUX)) {
-        throw new Error(util.format(errorMessages.authorEmailIsMissed, appPackageFile))
+      if (author == null) {
+        throw new Error(`Please specify "author" in the application package.json ('${appPackageFile}') — it is used as company name.`)
       }
 
-      if ((<any>this.devMetadata.build).name != null) {
+      if (build.name != null) {
         throw new Error(util.format(errorMessages.nameInBuildSpecified, appPackageFile))
+      }
+
+      if (build.osx != null) {
+        warn('"build.osx" is deprecated — please use "mac" instead of "osx"')
+      }
+
+      if (build.prune != null) {
+        warn("prune is deprecated — development dependencies are never copied in any case")
       }
     }
   }
 
-  private installAppDependencies(platform: Platform, arch: Arch): Promise<any> {
+  private async installAppDependencies(platform: Platform, arch: Arch): Promise<any> {
+    if (this.devMetadata.build.nodeGypRebuild === true) {
+      log(`Execute node-gyp rebuild for arch ${Arch[arch]}`)
+      await exec(process.platform === "win32" ? "node-gyp.cmd" : "node-gyp", ["rebuild"], {
+        env: getGypEnv(this.electronVersion, Arch[arch]),
+      })
+    }
+
     if (this.isTwoPackageJsonProjectLayoutUsed) {
       if (this.devMetadata.build.npmRebuild === false) {
         log("Skip app dependencies rebuild because npmRebuild is set to false")
       }
       else if (platform.nodeName === process.platform) {
-        return installDependencies(this.appDir, this.electronVersion, Arch[arch], "rebuild")
+        await installDependencies(this.appDir, this.electronVersion, Arch[arch], (await statOrNull(path.join(this.appDir, "node_modules"))) == null ? "install" : "rebuild")
       }
       else {
         log("Skip app dependencies rebuild because platform is different")
@@ -191,8 +237,6 @@ export class Packager implements BuildInfo {
     else {
       log("Skip app dependencies rebuild because dev and app dependencies are not separated")
     }
-
-    return BluebirdPromise.resolve()
   }
 }
 
@@ -202,11 +246,11 @@ export function normalizePlatforms(rawPlatforms: Array<string | Platform> | stri
     return [Platform.fromString(process.platform)]
   }
   else if (platforms[0] === "all") {
-    if (process.platform === Platform.OSX.nodeName) {
-      return [Platform.OSX, Platform.LINUX, Platform.WINDOWS]
+    if (process.platform === Platform.MAC.nodeName) {
+      return [Platform.MAC, Platform.LINUX, Platform.WINDOWS]
     }
     else if (process.platform === Platform.LINUX.nodeName) {
-      // OS X code sign works only on OS X
+      // MacOS code sign works only on MacOS
       return [Platform.LINUX, Platform.WINDOWS]
     }
     else {
@@ -219,7 +263,7 @@ export function normalizePlatforms(rawPlatforms: Array<string | Platform> | stri
 }
 
 function checkConflictingOptions(options: any) {
-  for (let name of ["all", "out", "tmpdir", "version", "platform", "dir", "arch", "name"]) {
+  for (let name of ["all", "out", "tmpdir", "version", "platform", "dir", "arch", "name", "extra-resource"]) {
     if (name in options) {
       throw new Error(`Option ${name} is ignored, do not specify it.`)
     }
@@ -240,7 +284,7 @@ async function checkWineVersion(checkPromise: Promise<string>) {
       throw new Error(wineError("wine is required"))
     }
     else {
-      throw new Error("Cannot check wine version: " + e)
+      throw new Error(`Cannot check wine version: ${e}`)
     }
   }
 
@@ -248,7 +292,23 @@ async function checkWineVersion(checkPromise: Promise<string>) {
     wineVersion = wineVersion.substring("wine-".length)
   }
 
-  if (compareVersions(wineVersion, "1.8") === -1) {
+  if (wineVersion.split(".").length === 2) {
+    wineVersion += ".0"
+  }
+
+  if (semver.lt(wineVersion, "1.8.0")) {
     throw new Error(wineError(`wine 1.8+ is required, but your version is ${wineVersion}`))
+  }
+}
+
+function checkDependencies(dependencies?: { [key: string]: string }) {
+  if (dependencies == null) {
+    return
+  }
+
+  for (let name of ["electron", "electron-prebuilt", "electron-builder"]) {
+    if (name in dependencies) {
+      throw new Error(`${name} must be in the devDependencies`)
+    }
   }
 }

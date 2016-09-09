@@ -1,206 +1,200 @@
 import { downloadCertificate } from "./codeSign"
 import { Promise as BluebirdPromise } from "bluebird"
-import { PlatformPackager, BuildInfo, smarten, getArchSuffix } from "./platformPackager"
+import { PlatformPackager, BuildInfo, getArchSuffix, Target } from "./platformPackager"
 import { Platform, WinBuildOptions, Arch } from "./metadata"
 import * as path from "path"
-import { log, warn } from "./util"
-import { deleteFile, emptyDir, open, close, read } from "fs-extra-p"
-import { sign, SignOptions } from "signcode-tf"
-import { ElectronPackagerOptions } from "electron-packager-tf"
+import { log, task } from "./util/log"
+import { exec, use } from "./util/util"
+import { open, close, read } from "fs-extra-p"
+import { sign, SignOptions, getSignVendorPath } from "./windowsCodeSign"
+import SquirrelWindowsTarget from "./targets/squirrelWindows"
+import NsisTarget from "./targets/nsis"
+import { DEFAULT_TARGET, createCommonTarget, DIR_TARGET } from "./targets/targetFactory"
+import { rename } from "fs-extra-p"
 
 //noinspection JSUnusedLocalSymbols
-const __awaiter = require("./awaiter")
+const __awaiter = require("./util/awaiter")
 
-interface FileCodeSigningInfo {
-  readonly file: string
+export interface FileCodeSigningInfo {
+  readonly file?: string | null
   readonly password?: string | null
+
+  readonly subjectName?: string | null
 }
 
 export class WinPackager extends PlatformPackager<WinBuildOptions> {
-  private readonly cscInfo: Promise<FileCodeSigningInfo | null>
+  readonly cscInfo: Promise<FileCodeSigningInfo | null> | null
 
   private readonly iconPath: Promise<string>
 
-  constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>) {
+  constructor(info: BuildInfo) {
     super(info)
 
-    const certificateFile = this.customBuildOptions.certificateFile
-    if (certificateFile != null) {
-      const certificatePassword = this.customBuildOptions.certificatePassword || this.getCscPassword()
-      this.cscInfo = BluebirdPromise.resolve({
-        file: certificateFile,
-        password: certificatePassword == null ? null : certificatePassword.trim(),
-      })
-    }
-    else if (this.options.cscLink != null) {
-      this.cscInfo = downloadCertificate(this.options.cscLink)
-        .then(path => {
-          cleanupTasks.push(() => deleteFile(path, true))
-          return {
-            file: path,
-            password: this.getCscPassword(),
-          }
+    const subjectName = this.platformSpecificBuildOptions.certificateSubjectName
+    if (subjectName == null) {
+      const certificateFile = this.platformSpecificBuildOptions.certificateFile
+      const cscLink = this.options.cscLink
+      if (certificateFile != null) {
+        const certificatePassword = this.platformSpecificBuildOptions.certificatePassword || this.getCscPassword()
+        this.cscInfo = BluebirdPromise.resolve({
+          file: certificateFile,
+          password: certificatePassword == null ? null : certificatePassword.trim(),
         })
+      }
+      else if (cscLink != null) {
+        this.cscInfo = downloadCertificate(cscLink, info.tempDirManager)
+          .then(path => {
+            return {
+              file: path,
+              password: this.getCscPassword(),
+            }
+          })
+      }
+      else {
+        this.cscInfo = BluebirdPromise.resolve(null)
+      }
     }
     else {
-      this.cscInfo = BluebirdPromise.resolve(null)
+      this.cscInfo = BluebirdPromise.resolve({
+        subjectName: subjectName
+      })
     }
 
     this.iconPath = this.getValidIconPath()
+  }
+
+  createTargets(targets: Array<string>, mapper: (name: string, factory: (outDir: string) => Target) => void, cleanupTasks: Array<() => Promise<any>>): void {
+    for (let name of targets) {
+      if (name === DIR_TARGET) {
+        continue
+      }
+
+      if (name === DEFAULT_TARGET || name === "squirrel") {
+        mapper("squirrel", () => {
+          const targetClass: typeof SquirrelWindowsTarget = require("./targets/squirrelWindows").default
+          return new targetClass(this)
+        })
+      }
+      else if (name === "nsis") {
+        mapper(name, outDir => {
+          const targetClass: typeof NsisTarget = require("./targets/nsis").default
+          return new targetClass(this, outDir)
+        })
+      }
+      else {
+        mapper(name, () => createCommonTarget(name))
+      }
+    }
   }
 
   get platform() {
     return Platform.WINDOWS
   }
 
-  protected get supportedTargets(): Array<string> {
-    return []
+  async getIconPath() {
+    return await this.iconPath
   }
 
-  private async getValidIconPath(): Promise<string> {
-    const iconPath = path.join(this.buildResourcesDir, "icon.ico")
+  private async getValidIconPath(): Promise<string | null> {
+    let iconPath = this.platformSpecificBuildOptions.icon || this.devMetadata.build.icon
+    if (iconPath != null && !iconPath.endsWith(".ico")) {
+      iconPath += ".ico"
+    }
+
+    iconPath = iconPath == null ? await this.getDefaultIcon("ico") : path.resolve(this.projectDir, iconPath)
+    if (iconPath == null) {
+      return null
+    }
+
     await checkIcon(iconPath)
     return iconPath
   }
 
-  async pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any> {
-    if (arch === Arch.ia32) {
-      warn("For windows consider only distributing 64-bit, see https://github.com/electron-userland/electron-builder/issues/359#issuecomment-214851130")
-    }
-
-    // we must check icon before pack because electron-packager uses icon and it leads to cryptic error message "spawn wine ENOENT"
-    await this.iconPath
-
+  async pack(outDir: string, arch: Arch, targets: Array<Target>, postAsyncTasks: Array<Promise<any>>): Promise<any> {
     const appOutDir = this.computeAppOutDir(outDir, arch)
-    const packOptions = this.computePackOptions(outDir, appOutDir, arch)
-
-    if (!targets.includes("default")) {
-      await this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions)
-      return
-    }
-
-    const installerOut = computeDistOut(outDir, arch)
-    await BluebirdPromise.all([
-      this.doPack(packOptions, outDir, appOutDir, arch, this.customBuildOptions),
-      emptyDir(installerOut)
-    ])
-
-    postAsyncTasks.push(this.packageInDistributableFormat(appOutDir, installerOut, arch, packOptions))
+    await this.doPack(outDir, appOutDir, this.platform.nodeName, arch, this.platformSpecificBuildOptions)
+    this.packageInDistributableFormat(outDir, appOutDir, arch, targets, postAsyncTasks)
   }
 
   protected computeAppOutDir(outDir: string, arch: Arch): string {
     return path.join(outDir, `win${getArchSuffix(arch)}-unpacked`)
   }
 
-  protected async doPack(options: ElectronPackagerOptions, outDir: string, appOutDir: string, arch: Arch, customBuildOptions: WinBuildOptions) {
-    await super.doPack(options, outDir, appOutDir, arch, customBuildOptions)
-    await this.sign(appOutDir)
-  }
-
-  protected async sign(appOutDir: string) {
+  async sign(file: string) {
     const cscInfo = await this.cscInfo
     if (cscInfo != null) {
-      const filename = `${this.appName}.exe`
-      log(`Signing ${filename} (certificate file "${cscInfo.file}")`)
+      log(`Signing ${path.basename(file)} (certificate file "${cscInfo.file}")`)
       await this.doSign({
-        path: path.join(appOutDir, filename),
+        path: file,
+
         cert: cscInfo.file,
-        password: cscInfo.password!,
-        name: this.appName,
-        site: await this.computePackageUrl(),
-        overwrite: true,
-        hash: this.customBuildOptions.signingHashAlgorithms,
+        subjectName: cscInfo.subjectName,
+
+        password: cscInfo.password,
+        name: this.appInfo.productName,
+        site: await this.appInfo.computePackageUrl(),
+        hash: this.platformSpecificBuildOptions.signingHashAlgorithms,
+        tr: this.platformSpecificBuildOptions.rfc3161TimeStampServer,
       })
     }
   }
 
-  protected async doSign(opts: SignOptions): Promise<any> {
-    return BluebirdPromise.promisify(sign)(opts)
+  //noinspection JSMethodCanBeStatic
+  protected async doSign(options: SignOptions): Promise<any> {
+    return sign(options)
   }
 
-  protected async computeEffectiveDistOptions(appOutDir: string, installerOutDir: string, packOptions: ElectronPackagerOptions, setupExeName: string): Promise<WinBuildOptions> {
-    let iconUrl = this.customBuildOptions.iconUrl || this.devMetadata.build.iconUrl
-    if (iconUrl == null) {
-      if (this.info.repositoryInfo != null) {
-        const info = await this.info.repositoryInfo.getInfo(this)
-        if (info != null) {
-          iconUrl = `https://github.com/${info.user}/${info.project}/blob/master/${this.relativeBuildResourcesDirname}/icon.ico?raw=true`
-        }
-      }
+  async signAndEditResources(file: string) {
+    const appInfo = this.appInfo
 
-      if (iconUrl == null) {
-        throw new Error("iconUrl is not specified, please see https://github.com/electron-userland/electron-builder/wiki/Options#WinBuildOptions-iconUrl")
-      }
+    const args = [
+      file,
+      "--set-version-string", "CompanyName", appInfo.companyName,
+      "--set-version-string", "FileDescription", appInfo.description,
+      "--set-version-string", "ProductName", appInfo.productName,
+      "--set-version-string", "InternalName", path.basename(appInfo.productFilename, ".exe"),
+      "--set-version-string", "LegalCopyright", appInfo.copyright,
+      "--set-version-string", "OriginalFilename", "",
+      "--set-file-version", appInfo.buildVersion,
+      "--set-product-version", appInfo.version,
+    ]
+
+    use(this.platformSpecificBuildOptions.legalTrademarks, it => args.push("--set-version-string", "LegalTrademarks", it!))
+    use(await this.getIconPath(), it => args.push("--set-icon", it))
+
+    const rceditExecutable = path.join(await getSignVendorPath(), "rcedit.exe")
+    const isWin = process.platform === "win32"
+    if (!isWin) {
+      args.unshift(rceditExecutable)
     }
+    await exec(isWin ? rceditExecutable : "wine", args)
 
-    checkConflictingOptions(this.customBuildOptions)
-
-    const projectUrl = await this.computePackageUrl()
-    const rceditOptions = {
-      "version-string": packOptions["version-string"],
-      "file-version": packOptions["build-version"],
-      "product-version": packOptions["app-version"],
-    }
-    rceditOptions["version-string"]!.LegalCopyright = packOptions["app-copyright"]
-
-    const cscInfo = await this.cscInfo
-    const options: any = Object.assign({
-      name: this.metadata.name,
-      productName: this.appName,
-      exe: this.appName + ".exe",
-      setupExe: setupExeName,
-      title: this.appName,
-      appDirectory: appOutDir,
-      outputDirectory: installerOutDir,
-      version: this.metadata.version,
-      description: smarten(this.metadata.description),
-      authors: this.metadata.author.name,
-      iconUrl: iconUrl,
-      setupIcon: await this.iconPath,
-      certificateFile: cscInfo == null ? null : cscInfo.file,
-      certificatePassword: cscInfo == null ? null : cscInfo.password,
-      fixUpPaths: false,
-      skipUpdateIcon: true,
-      usePackageJson: false,
-      extraMetadataSpecs: projectUrl == null ? null : `\n    <projectUrl>${projectUrl}</projectUrl>`,
-      copyright: packOptions["app-copyright"],
-      packageCompressionLevel: this.devMetadata.build.compression === "store" ? 0 : 9,
-      sign: {
-        name: this.appName,
-        site: projectUrl,
-        overwrite: true,
-        hash: this.customBuildOptions.signingHashAlgorithms,
-      },
-      rcedit: rceditOptions,
-    }, this.customBuildOptions)
-
-    if (!("loadingGif" in options)) {
-      const resourceList = await this.resourceList
-      if (resourceList.includes("install-spinner.gif")) {
-        options.loadingGif = path.join(this.buildResourcesDir, "install-spinner.gif")
-      }
-    }
-
-    return options
+    await this.sign(file)
   }
 
-  protected async packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: Arch, packOptions: ElectronPackagerOptions): Promise<any> {
-    const winstaller = require("electron-winstaller-fixed")
-    const version = this.metadata.version
-    const archSuffix = getArchSuffix(arch)
-    const setupExeName = `${this.appName} Setup ${version}${archSuffix}.exe`
+  protected async postInitApp(appOutDir: string) {
+    const executable = path.join(appOutDir, `${this.appInfo.productFilename}.exe`)
+    await rename(path.join(appOutDir, "electron.exe"), executable)
+    await this.signAndEditResources(executable)
+  }
 
-    const distOptions = await this.computeEffectiveDistOptions(appOutDir, installerOutDir, packOptions, setupExeName)
-    await winstaller.createWindowsInstaller(distOptions)
-    this.dispatchArtifactCreated(path.join(installerOutDir, setupExeName), `${this.metadata.name}-Setup-${version}${archSuffix}.exe`)
-
-    const packagePrefix = `${this.metadata.name}-${winstaller.convertVersion(version)}-`
-    this.dispatchArtifactCreated(path.join(installerOutDir, `${packagePrefix}full.nupkg`))
-    if (distOptions.remoteReleases != null) {
-      this.dispatchArtifactCreated(path.join(installerOutDir, `${packagePrefix}delta.nupkg`))
+  protected packageInDistributableFormat(outDir: string, appOutDir: string, arch: Arch, targets: Array<Target>, promises: Array<Promise<any>>): void {
+    for (let target of targets) {
+      if (target instanceof SquirrelWindowsTarget) {
+        promises.push(task(`Building Squirrel.Windows installer`, target.build(arch, appOutDir)))
+      }
+      else if (target instanceof NsisTarget) {
+        promises.push(target.build(arch, appOutDir))
+      }
+      else {
+        const format = target.name
+        log(`Creating Windows ${format}`)
+        // we use app name here - see https://github.com/electron-userland/electron-builder/pull/204
+        const outFile = path.join(outDir, this.generateName(format, arch, false, "win"))
+        promises.push(this.archiveApp(format, appOutDir, outFile)
+          .then(() => this.dispatchArtifactCreated(outFile, this.generateName(format, arch, true, "win"))))
+      }
     }
-
-    this.dispatchArtifactCreated(path.join(installerOutDir, "RELEASES"))
   }
 }
 
@@ -251,26 +245,4 @@ function parseIco(buffer: Buffer): Array<Size> {
 
 function isIco(buffer: Buffer): boolean {
   return buffer.readUInt16LE(0) === 0 && buffer.readUInt16LE(2) === 1
-}
-
-export function computeDistOut(outDir: string, arch: Arch): string {
-  return path.join(outDir, `win${getArchSuffix(arch)}`)
-}
-
-function checkConflictingOptions(options: any) {
-  for (let name of ["outputDirectory", "appDirectory", "exe", "fixUpPaths", "usePackageJson", "extraFileSpecs", "extraMetadataSpecs", "skipUpdateIcon", "setupExe"]) {
-    if (name in options) {
-      throw new Error(`Option ${name} is ignored, do not specify it.`)
-    }
-  }
-
-  if ("noMsi" in options) {
-    warn(`noMsi is deprecated, please specify as "msi": true if you want to create an MSI installer`)
-    options.msi = !options.noMsi
-  }
-
-  const msi = options.msi
-  if (msi != null && typeof msi !== "boolean") {
-    throw new Error(`msi expected to be boolean value, but string '"${msi}"' was specified`)
-  }
 }

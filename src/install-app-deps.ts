@@ -1,14 +1,15 @@
 #! /usr/bin/env node
 
-import { computeDefaultAppDirectory, installDependencies, getElectronVersion, readPackageJson, use } from "./util"
-import { printErrorAndExit } from "./promise"
+import { computeDefaultAppDirectory, installDependencies, getElectronVersion, use } from "./util/util"
+import { printErrorAndExit } from "./util/promise"
 import * as path from "path"
 import { Promise as BluebirdPromise } from "bluebird"
 import { DevMetadata } from "./metadata"
 import yargs = require("yargs")
+import { readPackageJson } from "./util/readPackageJson"
 
 //noinspection JSUnusedLocalSymbols
-const __awaiter = require("./awaiter")
+const __awaiter = require("./util/awaiter")
 
 const args: any = yargs
   .option("arch", {
@@ -25,12 +26,12 @@ async function main() {
     getElectronVersion(devMetadata, devPackageFile)
   ])
 
+  if (results[0] === projectDir) {
+    throw new Error("install-app-deps is only useful for two package.json structure")
+  }
+
   await installDependencies(results[0], results[1], args.arch)
 }
 
-try {
-  main()
-}
-catch (e) {
-  printErrorAndExit(e)
-}
+main()
+  .catch(printErrorAndExit)

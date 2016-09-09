@@ -1,19 +1,18 @@
 import test from "ava-tf"
 
+/* tslint:disable:no-invalid-this no-namespace */
+
 declare module "ava-tf" {
   namespace test {
-    export const ifNotWindows: typeof test;
-    export const ifOsx: typeof test;
-    export const ifNotCi: typeof test;
-    export const ifNotCiOsx: typeof test;
-    export const ifDevOrWinCi: typeof test;
-    export const ifWinCi: typeof test;
-    export const ifDevOrLinuxCi: typeof test;
-    export const ifNotTravis: typeof test;
-  }
-  
-  interface AssertContext {
-    throws(value: (() => void) | Promise<any>, error?: ErrorValidator, message?: string): void
+    export const ifNotWindows: typeof test
+    export const ifOsx: typeof test
+    export const ifNotCi: typeof test
+    export const ifCi: typeof test
+    export const ifNotCiOsx: typeof test
+    export const ifDevOrWinCi: typeof test
+    export const ifWinCi: typeof test
+    export const ifDevOrLinuxCi: typeof test
+    export const ifNotTravis: typeof test
   }
 }
 
@@ -26,6 +25,11 @@ Object.defineProperties(test, {
   "ifNotCi": {
     get: function () {
       return process.env.CI ? this.skip : this
+    }
+  },
+  "ifCi": {
+    get: function () {
+      return process.env.CI ? this : this.skip
     }
   },
   "ifNotCiOsx": {

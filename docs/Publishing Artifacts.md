@@ -1,10 +1,10 @@
-Travis and AppVeyor support publishing artifacts. But it requires additional configuration. For each CI (since AppVeyor can build only Windows and Travis only OS X / Linux).
+Travis and AppVeyor support publishing artifacts. But it requires additional configuration. For each CI (since AppVeyor can build only Windows and Travis only MacOS / Linux).
 
 `electron-builder` allows you to just add `GH_TOKEN` environment variable and that's all.
 
 Currently, only GitHub Releases is supported.
 
-`publish` option values:
+`--publish` option values:
 
 | Value          |  Description
 | -------------- | -----------
@@ -37,3 +37,10 @@ But please consider using automatic rules instead of explicitly specifying `publ
  "release": "build"
  ```
  and if you run `npm run release`, a release will be drafted (if doesn't already exist) and artifacts published.
+ 
+ # GitHub Repository
+ 
+ No option to specify GitHub repository, detected automatically using:
+ * [repository](https://docs.npmjs.com/files/package.json#repository) in the application or development `package.json`,
+ * if not set, env `TRAVIS_REPO_SLUG` or `APPVEYOR_ACCOUNT_NAME`/`APPVEYOR_PROJECT_NAME` or `CIRCLE_PROJECT_USERNAME`/`CIRCLE_PROJECT_REPONAME`,
+ * if no env, from `.git/config` origin url.

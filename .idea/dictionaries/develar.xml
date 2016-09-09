@@ -2,32 +2,60 @@
   <dictionary name="develar">
     <words>
       <w>actperepo</w>
+      <w>addincludedir</w>
+      <w>appdir</w>
+      <w>appimage</w>
+      <w>appleid</w>
       <w>appveyor</w>
+      <w>archiver</w>
       <w>archs</w>
+      <w>aspx</w>
+      <w>atime</w>
       <w>authenticode</w>
       <w>awaiter</w>
+      <w>bintray</w>
       <w>buildpack</w>
+      <w>chown</w>
       <w>circleci</w>
       <w>clcerts</w>
       <w>cleanuper</w>
       <w>codesigning</w>
       <w>coroutine</w>
+      <w>cpus</w>
       <w>crypto</w>
+      <w>cuint</w>
       <w>debian</w>
       <w>difflet</w>
+      <w>digester</w>
       <w>disturl</w>
       <w>dpkg</w>
       <w>ebusy</w>
+      <w>electronuserland</w>
       <w>enoent</w>
+      <w>eperm</w>
       <w>github</w>
       <w>globaldots</w>
       <w>globby</w>
       <w>gnubin</w>
       <w>graphicsmagick</w>
+      <w>grün</w>
+      <w>gsettings</w>
       <w>gtar</w>
+      <w>guid</w>
+      <w>headerimage</w>
       <w>hicolor</w>
+      <w>hrtime</w>
       <w>icnsutils</w>
+      <w>idms</w>
+      <w>inno</w>
+      <w>insertmacro</w>
+      <w>installmode</w>
+      <w>instdir</w>
+      <w>ircs</w>
+      <w>isbinaryfile</w>
+      <w>joliet</w>
       <w>keyserver</w>
+      <w>lcid</w>
       <w>libappindicator</w>
       <w>libexec</w>
       <w>libgcrypt</w>
@@ -36,10 +64,16 @@
       <w>lzip</w>
       <w>lzma</w>
       <w>lzop</w>
+      <w>macroend</w>
       <w>makedeb</w>
+      <w>makensis</w>
+      <w>minimatch</w>
       <w>mkdirp</w>
+      <w>mkdtemp</w>
       <w>mpass</w>
       <w>multilib</w>
+      <w>multiuser</w>
+      <w>nevershow</w>
       <w>nokeys</w>
       <w>nomacver</w>
       <w>noninteractive</w>
@@ -47,27 +81,45 @@
       <w>nuget</w>
       <w>nupkg</w>
       <w>nuspec</w>
+      <w>osslsigncode</w>
       <w>packagejson</w>
       <w>pacman</w>
       <w>passin</w>
       <w>pkcs</w>
       <w>postinstall</w>
+      <w>prerelease</w>
       <w>productbuild</w>
+      <w>progexe</w>
       <w>promisify</w>
       <w>psmdcp</w>
+      <w>rcedit</w>
+      <w>readpass</w>
+      <w>regedit</w>
+      <w>rels</w>
       <w>repos</w>
       <w>rimraf</w>
+      <w>semver</w>
+      <w>signcode</w>
+      <w>signtool</w>
       <w>templating</w>
       <w>testapp</w>
+      <w>timestamping</w>
       <w>tsconfig</w>
       <w>udbz</w>
       <w>udro</w>
+      <w>unassociate</w>
+      <w>unicon</w>
       <w>userprofile</w>
+      <w>valuename</w>
       <w>veyor</w>
+      <w>volid</w>
+      <w>winedlloverrides</w>
       <w>winstaller</w>
       <w>xamarin</w>
       <w>xenial</w>
+      <w>xorriso</w>
       <w>yargs</w>
+      <w>zisofs</w>
     </words>
   </dictionary>
 </component>

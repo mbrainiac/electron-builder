@@ -1,31 +1,31 @@
-import { createKeychain, deleteKeychain, generateKeychainName } from "out/codeSign"
-import * as assertThat from "should/as-function"
+import { createKeychain } from "out/codeSign"
+import { assertThat } from "./helpers/fileAssert"
 import test from "./helpers/avaEx"
-import {
-  CSC_NAME, CSC_LINK,
-  CSC_KEY_PASSWORD,
-  CSC_INSTALLER_KEY_PASSWORD,
-  CSC_INSTALLER_LINK
-} from "./helpers/codeSignData"
-import { executeFinally, all } from "out/promise"
+import { CSC_LINK } from "./helpers/codeSignData"
+import { removePassword } from "out/util/util"
+import { TmpDir } from "out/util/tmp"
 
 //noinspection JSUnusedLocalSymbols
-const __awaiter = require("out/awaiter")
+const __awaiter = require("out/util/awaiter")
 
-test.ifOsx("create keychain", async () => {
-  const keychainName = generateKeychainName()
-  await executeFinally(createKeychain(keychainName, CSC_LINK, CSC_KEY_PASSWORD)
-    .then(result => {
-      assertThat(result.keychainName).not.empty()
-      assertThat(result.name).equal(CSC_NAME)
-    }), () => all([deleteKeychain(keychainName)]))
-})
+const tmpDir = new TmpDir()
 
-test.ifOsx("create keychain with installers", async () => {
-  const keychainName = generateKeychainName()
-  await executeFinally(createKeychain(keychainName, CSC_LINK, CSC_KEY_PASSWORD, CSC_INSTALLER_LINK, CSC_INSTALLER_KEY_PASSWORD)
-    .then(result => {
-      assertThat(result.keychainName).not.empty()
-      assertThat(result.name).equal(CSC_NAME)
-    }), () => all([deleteKeychain(keychainName)]))
+if (process.env.CSC_KEY_PASSWORD == null) {
+  console.warn("Skip keychain-specific tests because CSC_KEY_PASSWORD is not defined")
+}
+else {
+  test.ifOsx("create keychain", async () => {
+    const result = await createKeychain(tmpDir, CSC_LINK, process.env.CSC_KEY_PASSWORD)
+    assertThat(result.keychainName).isNotEmpty()
+  })
+
+  test.ifOsx("create keychain with installers", async () => {
+    const result = await createKeychain(tmpDir, CSC_LINK, process.env.CSC_KEY_PASSWORD)
+    assertThat(result.keychainName).isNotEmpty()
+  })
+}
+
+test.ifOsx("remove password from log", async () => {
+  assertThat(removePassword("seq -P foo -B")).isEqualTo("seq -P 2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae (sha256 hash) -B")
+  assertThat(removePassword("pass:foo")).isEqualTo("pass:2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae (sha256 hash)")
 })

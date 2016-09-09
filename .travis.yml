@@ -1,38 +1,46 @@
-osx_image: xcode7
+osx_image: xcode7.3
 
 matrix:
   include:
     - os: osx
-      env: NODE_VERSION=6
+      env: TEST_FILES=BuildTest,linuxPackagerTest,globTest NODE_VERSION=6 PUBLISH_TO_NPM=true
 
     - os: osx
-      env: TEST_FILES=osxPackagerTest,CodeSignTest NODE_VERSION=4
+      env: TEST_FILES=winPackagerTest,nsisTest,macPackagerTest NODE_VERSION=6
+
+    - os: osx
+      env: TEST_FILES=macPackagerTest,CodeSignTest NODE_VERSION=4
 
 language: c
 
 cache:
   directories:
     - node_modules
-    - test/testApp/node_modules
     - $HOME/.electron
-    - $HOME/.cache/fpm
+    - "test/fixtures/app-executable-deps/app/node_modules"
 
 before_install:
-  - if [[ "$TRAVIS_OS_NAME" == "osx" ]]; then brew install gnu-tar dpkg libicns graphicsmagick lzip; fi
-  - mkdir -p /tmp/git-lfs && curl -L https://github.com/github/git-lfs/releases/download/v1.2.0/git-lfs-$([ "$TRAVIS_OS_NAME" == "linux" ] && echo "linux" || echo "darwin")-amd64-1.2.0.tar.gz | tar -xz -C /tmp/git-lfs --strip-components 1 && /tmp/git-lfs/git-lfs pull
+  - curl -L https://dl.bintray.com/develar/bin/7za -o /tmp/7za
+  - chmod +x /tmp/7za
+  - curl -L https://dl.bintray.com/develar/bin/wine.7z -o /tmp/wine.7z
+  - /tmp/7za x -o/usr/local/Cellar -y /tmp/wine.7z
+  - brew link --overwrite fontconfig freetype gd gnutls jasper libgphoto2 libicns libtasn1 libusb libusb-compat little-cms2 nettle openssl sane-backends webp wine git-lfs gnu-tar dpkg graphicsmagick xz
+  - git-lfs pull
 
 install:
 - nvm install $NODE_VERSION
+- nvm use --delete-prefix $NODE_VERSION
 - if [[ "$TRAVIS_OS_NAME" == "osx" && "$NODE_VERSION" == "4" ]]; then npm install npm -g ; fi
 - npm install
 - npm prune
+- (cd test/fixtures/app-executable-deps/app && npm install && npm prune)
 
 script:
+- sudo ntpdate -u time.apple.com
 - npm run test
 
 after_success:
-- node out/cleanup.js
-- if [[ "$TRAVIS_BRANCH" == "master" && "$TRAVIS_PULL_REQUEST" == "false" && "$AUTO_PUBLISH" != "false" ]]; then npm run semantic-release ; fi
+- if [[ "$TRAVIS_BRANCH" == "master" && "$TRAVIS_PULL_REQUEST" == "false" && "$AUTO_PUBLISH" != "false" && "$TRAVIS_TAG" == "" && "$PUBLISH_TO_NPM" == "true" ]]; then npm run semantic-release ; fi
 
 branches:
   except:

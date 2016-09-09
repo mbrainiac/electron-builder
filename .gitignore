@@ -1,5 +1,6 @@
 node_modules/
 *.log
+out/
 npm-debug.log
 dist/
 /.idea/compiler.xml
@@ -10,3 +11,5 @@ dist/
 /typings/browser.d.ts
 /typings/main.d.ts
 .DS_Store
+.idea/shelf/
+test/typings/electron-builder.d.ts

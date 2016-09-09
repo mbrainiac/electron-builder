@@ -3,7 +3,11 @@
   <component name="NewModuleRootManager" inherit-compiler-output="false">
     <content url="file://$MODULE_DIR$">
       <excludeFolder url="file://$MODULE_DIR$/node_modules" />
+      <excludeFolder url="file://$MODULE_DIR$/nsis-auto-updater/out" />
       <excludeFolder url="file://$MODULE_DIR$/out" />
+      <excludeFolder url="file://$MODULE_DIR$/test/fixtures/app-executable-deps/app/node_modules" />
+      <excludeFolder url="file://$MODULE_DIR$/test/fixtures/app-executable-deps/dist" />
+      <excludeFolder url="file://$MODULE_DIR$/test/fixtures/app-executable-deps/node_modules" />
       <excludeFolder url="file://$MODULE_DIR$/test/fixtures/test-app-one/dist" />
       <excludeFolder url="file://$MODULE_DIR$/test/fixtures/test-app/app/node_modules" />
       <excludeFolder url="file://$MODULE_DIR$/test/fixtures/test-app/dist" />
@@ -11,7 +15,7 @@
     </content>
     <orderEntry type="inheritedJdk" />
     <orderEntry type="sourceFolder" forTests="false" />
-    <orderEntry type="library" name="TS ES7" level="project" />
     <orderEntry type="library" name="electron-builder-for-tests" level="project" />
+    <orderEntry type="library" name="ts" level="project" />
   </component>
 </module>

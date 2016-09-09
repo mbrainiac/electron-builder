@@ -12,7 +12,7 @@ This includes:
 - log of the terminal output
 - node version
 - npm version
-- on which system do you want to create installers (OS X, Windows or Linux)
+- on which system do you want to create installers (MacOS, Windows or Linux)
 
 # Pull Requests
 To check that your contributions match the project coding style make sure `npm test` passes.
@@ -56,7 +56,7 @@ Must be one of the following:
 * **chore**: Changes to the build process or auxiliary tools and libraries such as documentation generation.
 
 ### Scope
-The scope is optional and could be anything specifying place of the commit change. For example `nsis`, `osx`, `linux`, etc...
+The scope is optional and could be anything specifying place of the commit change. For example `nsis`, `mac`, `linux`, etc...
 
 ### Subject
 The subject contains succinct description of the change:
@@ -81,3 +81,20 @@ A detailed explanation can be found in this [document](https://docs.google.com/d
 Don't edit wiki directly. Instead, edit files in the `/docs`.
 
 `/docs` is synced to wiki using git subtree merge when `next` release is marked as `latest` and available for all users.
+
+# Debug Tests
+
+Only IntelliJ Platform IDEs (IntelliJ IDEA, WebStorm) support debug. [Forked version of AVA](https://github.com/avajs/ava/pull/874) is used. Please see [AVA debug in the WebStorm](https://www.youtube.com/watch?v=C75UwuZXI98&feature=youtu.be).
+
+Use one of the shared run configurations as a template and:
+
+* Ensure that `Before launch` contains `Compile TypeScript`.
+* Set `Node interpreter` to NodeJS 7. Yes — NodeJS 7 is required to debug. Download [nightly build](https://nodejs.org/download/nightly/).
+* Set `Node parameters` to `--inspect`.
+* Set `Application Parameters` to `--match="test name" relative-test-file-name` if you want to debug particular test. E.g.
+  ```
+  --match="extraResources - one-package" test/out/globTest.js
+  ```
+* Set `Environment Variables`:
+  * `NODE_PATH` to `.`.
+  * Optionally, `TEST_APP_TMP_DIR` to some directory (e.g. `/tmp/electron-builder-test`) to inspect output if test uses temporary directory (only if `--match` is used). Specified directory will be used instead of random temporary directory and *cleared* on each run.

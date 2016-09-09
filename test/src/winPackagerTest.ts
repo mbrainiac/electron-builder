@@ -1,60 +1,43 @@
 import { Platform, Arch, BuildInfo } from "out"
 import test from "./helpers/avaEx"
-import { assertPack, platform, modifyPackageJson, signed } from "./helpers/packTester"
-import { move, outputFile } from "fs-extra-p"
+import { assertPack, platform, modifyPackageJson, getTestAsset, app } from "./helpers/packTester"
+import { outputFile, rename, copy } from "fs-extra-p"
 import * as path from "path"
-import { WinPackager, computeDistOut } from "out/winPackager"
+import { WinPackager } from "out/winPackager"
 import { Promise as BluebirdPromise } from "bluebird"
-import { ElectronPackagerOptions } from "electron-packager-tf"
 import { assertThat } from "./helpers/fileAssert"
-import { SignOptions } from "signcode-tf"
+import { SignOptions } from "out/windowsCodeSign"
+import SquirrelWindowsTarget from "out/targets/squirrelWindows"
+import { Target } from "out/platformPackager"
 
 //noinspection JSUnusedLocalSymbols
-const __awaiter = require("out/awaiter")
+const __awaiter = require("out/util/awaiter")
 
-test.ifDevOrWinCi("win", () => assertPack("test-app-one", signed({
-    targets: Platform.WINDOWS.createTarget(),
-  })
-))
-
-// test.ifNotCiOsx("win 32", () => assertPack("test-app-one", signed({
-//     targets: Platform.WINDOWS.createTarget(null, Arch.ia32),
-//   })
-// ))
+test.ifNotCiOsx("win", app({targets: Platform.WINDOWS.createTarget(["default", "zip"])}, {signed: true}))
 
 // very slow
-test.ifWinCi("delta", () => assertPack("test-app-one", {
-    targets: Platform.WINDOWS.createTarget(null, Arch.ia32),
-    devMetadata: {
-      build: {
-        win: {
-          remoteReleases: "https://github.com/develar/__test-app-releases",
-        }
-      }
-    },
-  }
-))
+test.skip("delta and msi", app({
+  targets: Platform.WINDOWS.createTarget(null, Arch.ia32),
+  devMetadata: {
+    build: {
+      win: {
+        remoteReleases: "https://github.com/develar/__test-app-releases",
+        msi: true,
+      },
+    }
+  },
+}))
 
-test.ifDevOrWinCi("beta version", () => {
-  const metadata: any = {
-    version: "3.0.0-beta.2"
+test.ifDevOrWinCi("beta version", app({
+  targets: Platform.WINDOWS.createTarget(["squirrel", "nsis"]),
+  devMetadata: <any>{
+    version: "3.0.0-beta.2",
   }
-
-  return assertPack("test-app-one", {
-    targets: Platform.WINDOWS.createTarget(),
-    devMetadata: metadata
-  }, {
-    expectedArtifacts: [
-      "RELEASES",
-      "TestApp Setup 3.0.0-beta.2.exe",
-      "TestApp-3.0.0-beta2-full.nupkg"
-    ]
-  })
-})
+}))
 
 test.ifNotCiOsx("msi as string", t => t.throws(assertPack("test-app-one", platform(Platform.WINDOWS),
   {
-    tempDirCreated: it => modifyPackageJson(it, data => {
+    projectDirCreated: it => modifyPackageJson(it, data => {
       data.build.win = {
         msi: "false",
       }
@@ -68,19 +51,19 @@ test("detect install-spinner, certificateFile/password", () => {
 
   return assertPack("test-app-one", {
     targets: Platform.WINDOWS.createTarget(),
-    platformPackagerFactory: (packager, platform, cleanupTasks) => platformPackager = new CheckingWinPackager(packager, cleanupTasks),
+    platformPackagerFactory: (packager, platform, cleanupTasks) => platformPackager = new CheckingWinPackager(packager),
     devMetadata: {
-        build: {
-          win: {
-            certificatePassword: "pass",
-          }
+      build: {
+        win: {
+          certificatePassword: "pass",
         }
       }
+    }
   }, {
-    tempDirCreated: it => {
+    projectDirCreated: it => {
       loadingGifPath = path.join(it, "build", "install-spinner.gif")
       return BluebirdPromise.all([
-        move(path.join(it, "install-spinner.gif"), loadingGifPath),
+        copy(getTestAsset("install-spinner.gif"), loadingGifPath),
         modifyPackageJson(it, data => {
           data.build.win = {
             certificateFile: "secretFile",
@@ -97,33 +80,63 @@ test("detect install-spinner, certificateFile/password", () => {
   })
 })
 
-test.ifNotCiOsx("icon < 256", (t: any) => t.throws(assertPack("test-app-one", platform(Platform.WINDOWS), {
-  tempDirCreated: projectDir => move(path.join(projectDir, "build", "incorrect.ico"), path.join(projectDir, "build", "icon.ico"), {clobber: true})
+test.ifNotCiOsx("icon < 256", t => t.throws(assertPack("test-app-one", platform(Platform.WINDOWS), {
+  projectDirCreated: projectDir => rename(path.join(projectDir, "build", "incorrect.ico"), path.join(projectDir, "build", "icon.ico"))
 }), /Windows icon size must be at least 256x256, please fix ".+/))
 
-test.ifNotCiOsx("icon not an image", (t: any) => t.throws(assertPack("test-app-one", platform(Platform.WINDOWS), {
-  tempDirCreated: projectDir => outputFile(path.join(projectDir, "build", "icon.ico"), "foo")
+test.ifNotCiOsx("icon not an image", t => t.throws(assertPack("test-app-one", platform(Platform.WINDOWS), {
+  projectDirCreated: projectDir => outputFile(path.join(projectDir, "build", "icon.ico"), "foo")
 }), /Windows icon is not valid ico file, please fix ".+/))
+
+test.ifOsx("custom icon", () => {
+  let platformPackager: CheckingWinPackager = null
+  return assertPack("test-app-one", {
+    targets: Platform.WINDOWS.createTarget(),
+    platformPackagerFactory: (packager, platform, cleanupTasks) => platformPackager = new CheckingWinPackager(packager)
+  }, {
+    projectDirCreated: projectDir => BluebirdPromise.all([
+      rename(path.join(projectDir, "build", "icon.ico"), path.join(projectDir, "customIcon.ico")),
+      modifyPackageJson(projectDir, data => {
+        data.build.win = {
+          icon: "customIcon"
+        }
+      })
+    ]),
+    packed: async context => {
+      assertThat(await platformPackager.getIconPath()).isEqualTo(path.join(context.projectDir, "customIcon.ico"))
+      return BluebirdPromise.resolve()
+    },
+  })
+})
+
+test.ifNotWindows("ev", t => t.throws(assertPack("test-app-one", {
+  targets: Platform.WINDOWS.createTarget(["dir"]),
+  devMetadata: {
+    build: {
+      win: {
+        certificateSubjectName: "ev",
+      }
+    }
+  }
+}), /certificateSubjectName supported only on Windows/))
 
 class CheckingWinPackager extends WinPackager {
   effectiveDistOptions: any
   signOptions: SignOptions | null
 
-  constructor(info: BuildInfo, cleanupTasks: Array<() => Promise<any>>) {
-    super(info, cleanupTasks)
+  constructor(info: BuildInfo) {
+    super(info)
   }
 
-  async pack(outDir: string, arch: Arch, targets: Array<string>, postAsyncTasks: Array<Promise<any>>): Promise<any> {
+  async pack(outDir: string, arch: Arch, targets: Array<Target>, postAsyncTasks: Array<Promise<any>>): Promise<any> {
     // skip pack
-    const installerOutDir = computeDistOut(outDir, arch)
-    const appOutDir = this.computeAppOutDir(outDir, arch)
-    const packOptions = this.computePackOptions(outDir, appOutDir, arch)
-    this.effectiveDistOptions = await this.computeEffectiveDistOptions(appOutDir, installerOutDir, packOptions, "Foo.exe")
+    const helperClass: typeof SquirrelWindowsTarget = require("out/targets/squirrelWindows").default
+    this.effectiveDistOptions = await (new helperClass(this).computeEffectiveDistOptions())
 
-    await this.sign(appOutDir)
+    await this.sign(this.computeAppOutDir(outDir, arch))
   }
 
-  async packageInDistributableFormat(appOutDir: string, installerOutDir: string, arch: Arch, packOptions: ElectronPackagerOptions): Promise<any> {
+  packageInDistributableFormat(outDir: string, appOutDir: string, arch: Arch, targets: Array<Target>, promises: Array<Promise<any>>): void {
     // skip
   }
 

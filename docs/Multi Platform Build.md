@@ -3,31 +3,42 @@ Don't expect that you can build app for all platforms on one platform.
 * If your app has native dependencies, it can be compiled only on the target platform.
 [prebuild](https://www.npmjs.com/package/prebuild) is a solution, but most node modules [don't provide](https://github.com/atom/node-keytar/issues/27) prebuilt binaries.
 
-* OS Code Signing works only on OS X. [Cannot be fixed](http://stackoverflow.com/a/12156576).
-* Windows Code Signing doesn't work on Linux. We are going to fix it soon.
+* OS Code Signing works only on MacOS. [Cannot be fixed](http://stackoverflow.com/a/12156576).
 
-Don't think that mentioned issues are major, you should use build servers — e.g. [AppVeyor](http://www.appveyor.com/) to build Windows app and [Travis](https://travis-ci.org) to build OS X/Linux apps.
+Don't think that mentioned issues are major, you should use build servers — e.g. [AppVeyor](http://www.appveyor.com/) to build Windows app and [Travis](https://travis-ci.org) to build MacOS/Linux apps.
 
 See [sample appveyor.yml](https://github.com/develar/onshape-desktop-shell/blob/master/appveyor.yml) to build Electron app for Windows.
-And [sample .travis.yml](https://github.com/develar/onshape-desktop-shell/blob/master/.travis.yml) to build Electron app for OS X.
+And [sample .travis.yml](https://github.com/develar/onshape-desktop-shell/blob/master/.travis.yml) to build Electron app for MacOS.
 
-## OS X
+By default build for current platform and current arch. Use CLI flags `--mac`, `--win`, `--linux` to specify platforms. And `--ia32`, `--x64` to specify arch.
+
+For example, to build app for MacOS, Windows and Linux:
+```
+build -mwl
+```
+
+Build performed in parallel, so, it is highly recommended to not use npm task per platform (e.g. `npm run dist:mac && npm run dist:win32`), but specify multiple platforms/targets in one build command.
+You don't need to clean dist output before build — output directory is cleaned automatically.
+
+## MacOS
 
 Use [brew](http://brew.sh) to install required packages.
 
-To build app in distributable format for Windows on OS X:
+### To build app for Windows on MacOS:
 ```
-brew install Caskroom/cask/xquartz wine mono
+brew install wine --without-x11
+brew install mono
 ```
 
-To build app in distributable format for Linux on OS X:
+### To build app for Linux on MacOS:
 ```
-brew install gnu-tar libicns graphicsmagick
+brew install gnu-tar libicns graphicsmagick xz
 ```
 
 To build rpm: `brew install rpm`.
 
 ## Linux
+
 To build app in distributable format for Linux:
 ```
 sudo apt-get install --no-install-recommends -y icnsutils graphicsmagick xz-utils
@@ -37,7 +48,7 @@ To build rpm: `sudo apt-get install --no-install-recommends -y rpm`.
 
 To build pacman: `sudo apt-get install --no-install-recommends -y bsdtar`.
 
-To build app in distributable format for Windows on Linux:
+### To build app for Windows on Linux:
 * Install Wine (1.8+ is required):
 
   ```
@@ -55,12 +66,7 @@ To build app in distributable format for Windows on Linux:
   sudo apt-get install --no-install-recommends -y mono-devel ca-certificates-mono
   ```
 
-* Install osslsigncode.
-  ```
-  apt-get install --no-install-recommends -y osslsigncode
-  ```
-
-To build app in 32 bit from a machine with 64 bit:
+### To build app in 32 bit from a machine with 64 bit:
 
 ```
 sudo apt-get install --no-install-recommends -y gcc-multilib g++-multilib
@@ -75,4 +81,4 @@ dist: trusty
 
 ## Windows
 
-Not documented yet.
+Use [Docker](https://github.com/electron-userland/electron-builder/wiki/Docker).
